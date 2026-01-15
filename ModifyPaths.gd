@@ -580,7 +580,8 @@ func get_path_config_from_ui(location: String):
 	return {
 		"start_point": ui_config["path_start_point"][location]["slider"].value,
 		"path_flip_vertical": ui_config["flip_vertical"][location]["button"].pressed,
-		"fade_distance": ui_config["fade_distance"][location]["slider"].value
+		"fade_distance": ui_config["fade_distance"][location]["slider"].value,
+		"type": "paths"
 	}
 
 

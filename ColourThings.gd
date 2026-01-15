@@ -255,7 +255,7 @@ func make_gradient_map_ui():
 	ui_config["gradient_map"].connect("colour_picker_activated",self, "on_gradient_colour_picker_activated")
 	
 	ui_config["gradient_map"].reset()
-	ui_config["gradient_map"].gradientmap_log_level = gradientmap_log_level
+	ui_config["gradient_map"].logging_level = gradientmap_log_level
 	ui_config["gradient_map"].gradientpresets_log_level = gradientpresets_log_level
 
 # When the gradient mod tool is opened, refresh the group list

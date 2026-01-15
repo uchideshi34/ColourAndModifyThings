@@ -784,7 +784,7 @@ func get_edge_blur_config_from_ui(location: String):
 
 	outputlog("get_edge_blur_config_from_ui: " + str(location),2)
 
-	var edge_blur_config = {"has_edge_blur": false}
+	var edge_blur_config = {"has_edge_blur": false, "type": "pattern_shapes"}
 
 	# If we have made a the ui then
 	if ui_config.has(location):

@@ -490,7 +490,8 @@ func apply_fade_ends_to_path(node, shader_material: ShaderMaterial, config: Dict
 		if config.has("fade_distance"):
 			shader_material.set_shader_param("fade_distance", config["fade_distance"])
 		else:
-			shader_material.set_shader_param("fade_distance", 0.1)
+			# Set the default value which is 10 rather than 0.1
+			shader_material.set_shader_param("fade_distance", 10)
 
 
 	return shader_material

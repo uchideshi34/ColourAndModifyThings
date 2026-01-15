@@ -967,6 +967,8 @@ func setup_select_tool_options_change():
 # Function to respond when a select tool option becomes visible or hidden
 func on_select_tool_option_visibility_changed(vbox: VBoxContainer, tool_type: String):
 
+	outputlog("on_select_tool_option_visibility_changed: " + str(tool_type) + " visible: " + str(vbox.visible),2)
+
 	# If it has become visible then
 	if vbox.visible:
 		if colourthings != null:

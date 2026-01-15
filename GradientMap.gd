@@ -62,7 +62,7 @@ func _init():
 	colour_points_scroll.add_child(colour_points_vbox)
 	colour_points_vbox.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	colour_points_vbox.size_flags_vertical = Control.SIZE_EXPAND_FILL
-	colour_points_scroll.rect_min_size = Vector2(0,64)
+	colour_points_scroll.rect_min_size = Vector2(0,256)
 	
 
 	# Make the gradient display hbox which contains the gradient colour rect and display details button
@@ -73,12 +73,6 @@ func _init():
 	display_details_button.hint_tooltip = "Toggle to show/hide the controls for the gradient map."
 	display_details_button.connect("toggled", self, "_on_display_details_toggled")
 	gradient_display.add_child(display_details_button)
-
-	var resize_vbox = VBoxContainer.new()
-	resize_vbox.rect_min_size = Vector2(5,0)
-	resize_vbox.mouse_default_cursor_shape = Control.CURSOR_HSIZE
-	resize_vbox.hint_tooltip = "Drag to increase size of horizontal gradient display."
-	resize_vbox.connect("gui_input", self, "on_gradient_display_size_drag_management")
 
 	var label = Label.new()
 	label.text = "Gradient"
@@ -94,8 +88,6 @@ func _init():
 	gradient_texture.gradient = gradient
 	gradient_texrect.texture = gradient_texture
 	gradient_texrect.rect_min_size = Vector2(53,53)
-
-	gradient_display.add_child(resize_vbox)
 
 	_on_display_details_toggled(true)
 
@@ -131,23 +123,6 @@ func initial_setup():
 	display_details_button.icon = load_image_texture("icons/eye-icon.png")
 
 	presetsdropdown.make_presets_import_and_export_ui(tool_panel.Align, -1)
-
-
-#########################################################################################################
-##
-## DRAG GRADIENT SIZE FUNCTIONS
-##
-#########################################################################################################
-
-# Function to respond when panel drag is active
-func on_gradient_display_size_drag_management(event: InputEvent):
-
-	outputlog("on_gradient_display_size_drag_management",2)
-
-	if Input.is_mouse_button_pressed(BUTTON_LEFT):
-		var local_mouse_pos = gradient_display.get_local_mouse_position()
-		if Global.Editor.content.rect_size.x > 60 || local_mouse_pos.x > 0.0:
-			gradient_display.set_custom_minimum_size(Vector2(max(local_mouse_pos.x,0.0),0))
 
 
 #########################################################################################################
@@ -364,6 +339,8 @@ func make_new_colourpoint(offset: float = 1.0, color: Color = Color.white):
 # Delete a colour point provided there are more than two
 func delete_colourpoint(hbox):
 
+	outputlog("delete_colourpoint",3)
+
 	# If we have at least two colour points then we can delete one
 	if colour_points_vbox.get_child_count() > 2:
 		colour_points_vbox.remove_child(hbox)
@@ -372,6 +349,8 @@ func delete_colourpoint(hbox):
 
 # Create a new colour point above the current one
 func add_colourpoint(hbox):
+
+	outputlog("add_colourpoint",3)
 
 	var new_hbox = make_new_colourpoint()
 	colour_points_vbox.move_child(new_hbox, hbox.get_index())
@@ -441,13 +420,14 @@ func refresh_gradient(ignore_this):
 		else:
 			gradient.add_point(hbox.get_meta("slider").value, hbox.get_meta("colourbutton").color)
 	
-	outputlog("gradient: " + str(gradient.colors),3)
-	outputlog("gradient: " + str(gradient.offsets),3)
+	outputlog("gradient.colors: " + str(gradient.colors),3)
+	outputlog("gradient.offsets: " + str(gradient.offsets),3)
 
 	gradient_texrect.texture.gradient = gradient
 
 	# If the gradient location has been initialised then emit a signal on change
 	if tool_type != "" && location != "":
+		outputlog("emit_signal gradient_changed",3)
 		self.emit_signal("gradient_changed", tool_type, location)
 	
 	# Change the levels slider to reflect the new values
@@ -620,7 +600,6 @@ func move_location(new_tool_type: String, new_location: String, show_ui: bool):
 				if thing.get_child(0) is Label:
 					if thing.get_child(0).text.to_upper() in find_text:
 						new_index = thing.get_index()
-
 	
 	if current_vbox != null:
 		current_vbox.remove_child(colour_points_scroll)
@@ -631,8 +610,15 @@ func move_location(new_tool_type: String, new_location: String, show_ui: bool):
 	new_vbox.add_child(colour_points_scroll)
 	new_vbox.move_child(colour_points_scroll,new_index)
 
+	# NOTE - moving the levels rangeslider seems to trigger a signal so suppress the connected signals while this happens
+	levels_slider.minSlider.set_block_signals(true)
+	levels_slider.maxSlider.set_block_signals(true)
 	new_vbox.add_child(levels_hbox)
 	new_vbox.move_child(levels_hbox,new_index)
+
+	# NOTE - undo the signal suppression
+	levels_slider.minSlider.set_block_signals(false)
+	levels_slider.maxSlider.set_block_signals(false)
 
 	new_vbox.add_child(gradient_display)
 	new_vbox.move_child(gradient_display,new_index)
@@ -645,9 +631,13 @@ func move_location(new_tool_type: String, new_location: String, show_ui: bool):
 		show()
 	else:
 		hide()
+	
+	outputlog("move_location: complete",2)
 
 # Function to hide the gradient map UI
 func hide():
+
+	outputlog("hide",2)
 
 	gradient_display.visible = false
 	colour_points_scroll.visible = false
@@ -656,6 +646,8 @@ func hide():
 
 # Function to show the gradient map UI
 func show():
+
+	outputlog("show",2)
 
 	gradient_display.visible = true
 	colour_points_scroll.visible = display_details_button.pressed
