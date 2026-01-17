@@ -33,7 +33,13 @@ const DEFAULT_TERRAIN_DATA = {
 	"colour": "ffffffff",
 	"rotation": 0.0,
 	"flip_x": false,
-	"flip_y": false
+	"flip_y": false,
+	"is_transparent": false,
+	"transparency_threshold": 1.0
+}
+const DEFAULT_COLOUR_DATA = {
+	"shader_type": "none",
+	"colour": "ffffffff"
 }
 
 # Logging Functions
@@ -80,6 +86,47 @@ func is_the_same(a, b) -> bool:
 		return false
 
 	return true
+
+# Function to merge dictionaries, dictionary b overwrites duplicate key values in the result
+func merge_dict(dict_a: Dictionary, dict_b: Dictionary, merge_arrays: bool = false) -> Dictionary:
+
+	var new_dict = dict_a.duplicate(true)
+	for key in dict_b:
+		if key in new_dict:
+			if dict_a[key] is Dictionary and dict_b[key] is Dictionary:
+				new_dict[key] = merge_dict(dict_a[key], dict_b[key])
+			elif dict_a[key] is Array and dict_b[key] is Array and merge_arrays:
+				new_dict[key] = merge_array(dict_a[key], dict_b[key])
+			else:
+				new_dict[key] = dict_b[key]
+		else:
+			new_dict[key] = dict_b[key]
+	return new_dict
+
+# Function to merge arrays
+func merge_array(array_1: Array, array_2: Array) -> Array:
+	var new_array = array_1.duplicate(true)
+	var compare_array = new_array
+	var item_exists
+
+	compare_array = []
+	for item in new_array:
+		if item is Dictionary or item is Array:
+			compare_array.append(JSON.print(item))
+		else:
+			compare_array.append(item)
+
+	for item in array_2:
+		item_exists = item
+		if item is Dictionary or item is Array:
+			item = item.duplicate(true)
+			item_exists = JSON.print(item)
+
+		if not item_exists in compare_array:
+			new_array.append(item)
+	
+	return new_array
+
 
 # Function to look at a node and determine what type it is based on its properties
 func get_node_type(node):
@@ -647,6 +694,10 @@ func set_terrain_non_gradient_material_values_by_index(terrain, index: int, conf
 	terrain.material.set_shader_param("flip_x_" + str(index+1), config["flip_x"])
 	terrain.material.set_shader_param("flip_y_" + str(index+1), config["flip_y"])
 
+	if config.has("is_transparent"):
+		terrain.material.set_shader_param("is_hole_" + str(index+1), config["is_transparent"])
+		terrain.material.set_shader_param("transparent_threshold_" + str(index+1), config["transparent_threshold"])
+
 # Function to take a dictionary of gradient data in readable format and convert it a texture.
 func create_gradient_texture(gradient_data: Dictionary):
 
@@ -724,8 +775,7 @@ func make_gradient_atlas(gradients: Array, width := 256) -> ImageTexture:
 func _on_reset_button_pressed(tool_type: String, location: String):
 
 	if tool_type == "TerrainBrush" && not active_terrain_index < 0:
-		var reset_colour_config = DEFAULT_TERRAIN_DATA.duplicate(true)
-		reset_colour_config["rotation"] = ui_config[tool_type][location]["rotation_slider"].value
+		var reset_colour_config = merge_dict(get_colour_config_from_terrain_ui(),DEFAULT_COLOUR_DATA.duplicate(true))
 		set_terrain_colour(active_terrain_index,reset_colour_config)
 		update_terrain_colour_ui_to_terrain(active_terrain_index,reset_colour_config)
 		create_update_custom_history()
@@ -734,11 +784,20 @@ func _on_reset_button_pressed(tool_type: String, location: String):
 func on_reset_rotation_button_pressed():
 
 	if not active_terrain_index < 0:
-		var reset_colour_config = store_terrain_custom_data[global.World.GetCurrentLevel()][active_terrain_index].duplicate(true)
-		reset_colour_config["rotation"] = 0.0
+		var reset_colour_config = merge_dict(get_colour_config_from_terrain_ui(),{"rotation":0.0})
 		set_terrain_colour(active_terrain_index,reset_colour_config)
 		update_terrain_colour_ui_to_terrain(active_terrain_index,reset_colour_config)
 		create_update_custom_history()
+
+# On rotation reset button pressed
+func on_reset_transparency_threshold_slider_button_pressed():
+
+	if not active_terrain_index < 0:
+		var reset_colour_config = merge_dict(get_colour_config_from_terrain_ui(),{"transparent_threshold":1.0})
+		set_terrain_colour(active_terrain_index,reset_colour_config)
+		update_terrain_colour_ui_to_terrain(active_terrain_index,reset_colour_config)
+		create_update_custom_history()
+
 
 # Function to flip the terrain and drive an update
 func on_flip_terrain_button_toggled(button_pressed: bool):
@@ -805,6 +864,15 @@ func make_rotation_slider_for_terrain(tool_type: String, location: String):
 	var reset_rotation_button = make_button(ui_element["rotation_slider"].hbox, "icons/centre-icon.png","Reset rotation to 0.0", false)
 	reset_rotation_button.connect("pressed", self, "on_reset_rotation_button_pressed")
 
+# Function when the transparency slider changes
+func on_transparency_threshold_slider_changed(value: float):
+
+	outputlog("on_transparency_threshold_slider_changed",2)
+
+	# Error check that we have not set the active terrain incorrectly.
+	if not active_terrain_index < 0:
+		set_terrain_colour(active_terrain_index,get_colour_config_from_terrain_ui())
+
 # Function to respond when a slider is changed
 func on_terrain_rotation_slider_changed(value: float):
 
@@ -813,6 +881,53 @@ func on_terrain_rotation_slider_changed(value: float):
 	# Error check that we have not set the active terrain incorrectly.
 	if not active_terrain_index < 0:
 		set_terrain_colour(active_terrain_index,get_colour_config_from_terrain_ui())
+
+# Make Transparent Terrain UI
+func make_transparency_ui_for_terrain(tool_type: String, location: String):
+
+	outputlog("make_transparency_ui_for_terrain",0)
+
+	# Create the ui_config dictionary records
+	if not ui_config.has(tool_type):
+		ui_config[tool_type] = {}
+	if not ui_config[tool_type].has(location):
+		ui_config[tool_type][location] = {}
+	var ui_element = ui_config[tool_type][location]
+
+	# Make the toggle button for transparency
+	ui_element["transparency_button"] = make_button(global.Editor.Toolset.GetToolPanel(tool_type).Align, "res://ui/icons/buttons/circle.png","Enable this terrain slot to paint transparency.", true)
+	ui_element["transparency_button"].text = "Make Transparent"
+	ui_element["transparency_button"].connect("toggled", self, "on_transparency_button_toggled",[tool_type,location])
+	global.Editor.Toolset.GetToolPanel(tool_type).Align.move_child(ui_element["transparency_button"],global.Editor.Tools[tool_type].Controls["FILL"].get_index())
+
+	# Make the threshold slider for rotation
+	ui_element["transparency_threshold_slider"] = NewHSlider.new(global.Editor.Toolset.GetToolPanel(tool_type).Align, 1.0, 0.0, 1.0, 0.01)
+	ui_element["transparency_threshold_slider"].connect("value_changed", self, "on_transparency_threshold_slider_changed")
+	ui_element["transparency_threshold_slider"].connect("emit_history_event_signal", self, "create_update_custom_history")
+	global.Editor.Toolset.GetToolPanel(tool_type).Align.move_child(ui_element["transparency_threshold_slider"].hbox,global.Editor.Tools[tool_type].Controls["FILL"].get_index())
+	ui_element["transparency_threshold_slider"].hbox.visible = false
+
+	var texturerect = TextureRect.new()
+	texturerect.texture = load_image_texture("icons/settings-icon.png")
+	texturerect.stretch_mode = TextureRect.STRETCH_KEEP_CENTERED
+	texturerect.hint_tooltip = "Transparency Threshold"
+	ui_element["transparency_threshold_slider"].hbox.add_child(texturerect)
+	ui_element["transparency_threshold_slider"].hbox.move_child(texturerect,0)
+
+	var reset_transparency_threshold_slider_button = make_button(ui_element["transparency_threshold_slider"].hbox, "res://ui/icons/menu/undo.png","Reset transparency threshold to 1.0", false)
+	reset_transparency_threshold_slider_button.connect("pressed", self, "on_reset_transparency_threshold_slider_button_pressed")
+
+# Function called when the transparency button is toggled
+func on_transparency_button_toggled(button_pressed: bool, tool_type, location):
+
+	outputlog("on_transparency_button_toggled",2)
+
+	# Error check that we have not set the active terrain incorrectly.
+	if not active_terrain_index < 0:
+		set_terrain_colour(active_terrain_index,get_colour_config_from_terrain_ui())
+		create_update_custom_history()
+
+	ui_config[tool_type][location]["transparency_threshold_slider"].hbox.visible = button_pressed
 
 # When the gradient is changed
 func on_gradient_values_changed(tool_type: String, location: String):
@@ -832,7 +947,9 @@ func get_colour_config_from_terrain_ui():
 		"colour": ui_config["TerrainBrush"]["main"]["palette"].color.to_html(),
 		"rotation": ui_config["TerrainBrush"]["main"]["rotation_slider"].value,
 		"flip_x": ui_config["TerrainBrush"]["main"]["flip_x_button"].pressed,
-		"flip_y": ui_config["TerrainBrush"]["main"]["flip_y_button"].pressed
+		"flip_y": ui_config["TerrainBrush"]["main"]["flip_y_button"].pressed,
+		"is_transparent": ui_config["TerrainBrush"]["main"]["transparency_button"].pressed,
+		"transparent_threshold": ui_config["TerrainBrush"]["main"]["transparency_threshold_slider"].value
 	}
 
 	if ui_config["TerrainBrush"]["main"]["gradient_button"].pressed:
@@ -872,6 +989,8 @@ func show_hide_terrain_colour_ui(make_visible: bool):
 	ui_config["TerrainBrush"]["main"]["palette"].visible = make_visible
 	ui_config["TerrainBrush"]["main"]["rotation_slider"].hbox.visible = make_visible
 	ui_config["TerrainBrush"]["main"]["flip_hbox"].visible = make_visible
+	ui_config["TerrainBrush"]["main"]["transparency_button"].visible = make_visible
+	ui_config["TerrainBrush"]["main"]["transparency_threshold_slider"].visible = make_visible
 	if ui_config["TerrainBrush"]["main"]["gradient_button"].pressed && make_visible:
 		ui_config["gradient_map"].show()
 	else:
@@ -891,6 +1010,14 @@ func update_terrain_colour_ui_to_terrain(index: int, config: Dictionary):
 	ui_element["rotation_slider"].slider_and_spinbox_change(config["rotation"], true)
 	ui_config["TerrainBrush"]["main"]["flip_x_button"].pressed = config["flip_x"]
 	ui_config["TerrainBrush"]["main"]["flip_y_button"].pressed = config["flip_y"]
+
+	# Set transparency values
+	if config.has("is_transparent"):
+		ui_config["TerrainBrush"]["main"]["transparency_button"].pressed = config["is_transparent"]
+		ui_config["TerrainBrush"]["main"]["transparency_threshold_slider"].slider_and_spinbox_change(config["transparent_threshold"], true)
+	else:
+		ui_config["TerrainBrush"]["main"]["transparency_button"].pressed = false
+		ui_config["TerrainBrush"]["main"]["transparency_threshold_slider"].slider_and_spinbox_change(1.0, true)
 
 	match config["shader_type"]:
 		"gradient":
@@ -1254,6 +1381,7 @@ func initialise() -> void:
 	init_terrain_data(global.World.GetCurrentLevel().ID)
 	initialise_colourthings_modmapdata()
 
+	make_transparency_ui_for_terrain("TerrainBrush","main")
 	make_rotation_slider_for_terrain("TerrainBrush","main")
 	make_flip_buttons_for_terrain("TerrainBrush","main")
 	make_overridecolour_ui("TerrainBrush","main")

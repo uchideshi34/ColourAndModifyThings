@@ -41,6 +41,26 @@ varying vec2 texture_2_uv;
 varying vec2 texture_3_uv;
 varying vec2 texture_4_uv;
 
+// transparent terrain controls
+uniform bool is_hole_1 = false;
+uniform bool is_hole_2 = false;
+uniform bool is_hole_3 = false;
+uniform bool is_hole_4 = false;
+uniform bool is_hole_5 = false;
+uniform bool is_hole_6 = false;
+uniform bool is_hole_7 = false;
+uniform bool is_hole_8 = false;
+
+uniform float transparent_threshold_1 = 1.0;
+uniform float transparent_threshold_2 = 1.0;
+uniform float transparent_threshold_3 = 1.0;
+uniform float transparent_threshold_4 = 1.0;
+uniform float transparent_threshold_5 = 1.0;
+uniform float transparent_threshold_6 = 1.0;
+uniform float transparent_threshold_7 = 1.0;
+uniform float transparent_threshold_8 = 1.0;
+
+
 // Sample the gradient
 vec4 sample_gradient(float gray, int index) {
     float rows = 8.0; // total gradients
@@ -125,7 +145,47 @@ void fragment()
 	vec4 t2 = get_coloured_texture(texture_2, texture_2_uv, tint_colour_2, apply_gradient_2, 1, flip_x_2, flip_y_2);
 	vec4 t3 = get_coloured_texture(texture_3, texture_3_uv, tint_colour_3, apply_gradient_3, 2, flip_x_3, flip_y_3);
 	vec4 t4 = get_coloured_texture(texture_4, texture_4_uv, tint_colour_4, apply_gradient_4, 3, flip_x_4, flip_y_4);
-	vec3 albedo = t1.rgb * s.r + t2.rgb * s.g + t3.rgb * s.b + t4.rgb * s.a;
+	
+	// heights are texture alpha modulated by corresponding splat channel
+	float h1 = s.r;
+	float h2 = s.g;
+	float h3 = s.b;
+	float h4 = s.a;
 
-	COLOR.rgb = albedo;
+	float alpha = 0.0;
+	bool set_alpha_zero = false;
+
+	// check if any of the terrain slots are holes, ie transparent
+	if (is_hole_1) {
+		h1 = 0.0;
+		if (s.r > alpha) {alpha = s.r;}
+		if (s.r > transparent_threshold_1) {set_alpha_zero = true;}
+	}
+	if (is_hole_2) {
+		h2 = 0.0;
+		if (s.g > alpha) {alpha = s.g;}
+		if (s.g > transparent_threshold_2) {set_alpha_zero = true;}
+	}
+	if (is_hole_3) {
+		h3 = 0.0;
+		if (s.b > alpha) {alpha = s.b;}
+		if (s.b > transparent_threshold_3) {set_alpha_zero = true;}
+	}
+	if (is_hole_4) {
+		h4 = 0.0;
+		if (s.a > alpha) {alpha = s.a;}
+		if (s.a > transparent_threshold_4) {set_alpha_zero = true;}
+	}
+
+
+	float splatSum = h1 + h2 + h3 + h3 + h4;
+	vec3 albedo = t1.rgb * h1 + t2.rgb * h2 + t3.rgb * h3 + t4.rgb * h4;
+	albedo /= splatSum;
+
+	if (set_alpha_zero) {
+		COLOR = vec4(albedo, 0.0);
+	}
+	else {
+		COLOR = vec4(albedo, 1.0 - alpha);
+	}
 }

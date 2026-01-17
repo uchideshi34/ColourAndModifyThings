@@ -55,6 +55,25 @@ uniform bool flip_y_6;
 uniform bool flip_y_7;
 uniform bool flip_y_8;
 
+// transparent terrain controls
+uniform bool is_hole_1 = false;
+uniform bool is_hole_2 = false;
+uniform bool is_hole_3 = false;
+uniform bool is_hole_4 = false;
+uniform bool is_hole_5 = false;
+uniform bool is_hole_6 = false;
+uniform bool is_hole_7 = false;
+uniform bool is_hole_8 = false;
+
+uniform float transparent_threshold_1 = 1.0;
+uniform float transparent_threshold_2 = 1.0;
+uniform float transparent_threshold_3 = 1.0;
+uniform float transparent_threshold_4 = 1.0;
+uniform float transparent_threshold_5 = 1.0;
+uniform float transparent_threshold_6 = 1.0;
+uniform float transparent_threshold_7 = 1.0;
+uniform float transparent_threshold_8 = 1.0;
+
 // per-texture rotation (radians)
 uniform float texture_rotation_1 = 0.0;
 uniform float texture_rotation_2 = 0.0;
@@ -215,8 +234,58 @@ void fragment()
 	float h6 = t6.a * s2.g;
 	float h7 = t7.a * s2.b;
 	float h8 = t8.a * s2.a;
+	float alpha = 0.0;
+	bool set_alpha_zero = false;
+
+	// check if any of the terrain slots are holes, ie transparent
+	if (is_hole_1) {
+		h1 = 0.0;
+		if (s.r > alpha) {alpha = s.r;}
+		if (s.r > transparent_threshold_1) {set_alpha_zero = true;}
+	}
+	if (is_hole_2) {
+		h2 = 0.0;
+		if (s.g > alpha) {alpha = s.g;}
+		if (s.g > transparent_threshold_2) {set_alpha_zero = true;}
+	}
+	if (is_hole_3) {
+		h3 = 0.0;
+		if (s.b > alpha) {alpha = s.b;}
+		if (s.b > transparent_threshold_3) {set_alpha_zero = true;}
+	}
+	if (is_hole_4) {
+		h4 = 0.0;
+		if (s.a > alpha) {alpha = s.a;}
+		if (s.a > transparent_threshold_4) {set_alpha_zero = true;}
+	}
+	if (is_hole_5) {
+		h5 = 0.0;
+		if (s2.r > alpha) {alpha = s2.r;}
+		if (s2.r > transparent_threshold_5) {set_alpha_zero = true;}
+	}
+	if (is_hole_6) {
+		h6 = 0.0;
+		if (s2.g > alpha) {alpha = s2.g;}
+		if (s2.g > transparent_threshold_6) {set_alpha_zero = true;}
+	}
+	if (is_hole_7) {
+		h7 = 0.0;
+		if (s2.b > alpha) {alpha = s2.b;}
+		if (s2.b > transparent_threshold_7) {set_alpha_zero = true;}
+	}
+	if (is_hole_8) {
+		h8 = 0.0;
+		if (s2.a > alpha) {alpha = s2.a;}
+		if (s2.a > transparent_threshold_8) {set_alpha_zero = true;}
+	}
 
 	vec3 albedo = blend8(t1.rgb, h1, t2.rgb, h2, t3.rgb, h3, t4.rgb, h4, t5.rgb, h5, t6.rgb, h6, t7.rgb, h7, t8.rgb, h8);
 
-	COLOR = vec4(albedo, 1.0);
+	if (set_alpha_zero) {
+		COLOR = vec4(albedo, 0.0);
+	}
+	else {
+		COLOR = vec4(albedo, 1.0 - alpha);
+	}
+	
 }
