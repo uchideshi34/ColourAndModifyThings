@@ -1,4 +1,4 @@
-# PresetsDropdown v1.0.0
+# PresetsDropdown v1.1.1
 class_name PresetsDropdown
 
 var editname_window = null
@@ -575,7 +575,9 @@ func on_preset_selected(index):
 		# Pop up the edit name window
 		popup_editname_window("default", "Create New Preset Template","")
 	else:
-		self.emit_signal("load_preset_values",dropdown.get_item_metadata(index))
+		# Check the data isn't null.
+		if dropdown.get_item_metadata(index) != null:
+			self.emit_signal("load_preset_values",dropdown.get_item_metadata(index))
 
 # Function called when a new preset value is selected, used to load presets or to add a new preset template
 func on_preset_group_selected(index):

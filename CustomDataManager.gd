@@ -485,7 +485,7 @@ func is_data_default(config_data, ignore_colour: bool = false):
 		return false
 	
 	if config_data.has("fade_distance") && config_data["type"] == "paths":
-		if not is_equal_approx(config_data["fade_distance"],0.1):
+		if not is_equal_approx(config_data["fade_distance"],10):
 			return false
 	
 	return true

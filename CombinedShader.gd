@@ -390,6 +390,27 @@ func update_shader_material_with_colour_config(node, shader_material: ShaderMate
 				outputlog("saturation applied",2)
 				shader_material.set_shader_param("saturation", colour_config["saturation"])
 				shader_material.set_shader_param("apply_saturation", true)
+			if colour_config.has("hue_shift"):
+				outputlog("hue_shift applied: " + str(colour_config["hue_shift"]),2)
+				shader_material.set_shader_param("hue_shift", colour_config["hue_shift"])
+			if colour_config.has("lightness"):
+				outputlog("lightness applied: " + str(colour_config["lightness"]),2)
+				shader_material.set_shader_param("lightness", colour_config["lightness"])
+			if colour_config.has("contrast"):
+				outputlog("contrast applied: " + str(colour_config["contrast"]),2)
+				shader_material.set_shader_param("contrast", colour_config["contrast"])
+			if colour_config.has("invert"):
+				outputlog("invert applied: " + str(colour_config["invert"]),2)
+				shader_material.set_shader_param("invert", colour_config["invert"])
+			if colour_config.has("sat_levels"):
+				outputlog("sat_levels applied: " + str(colour_config["sat_levels"]),2)
+				shader_material.set_shader_param("sat_blacks", colour_config["sat_levels"]["blacks"])
+				shader_material.set_shader_param("sat_midtones", colour_config["sat_levels"]["midtones"])
+				shader_material.set_shader_param("sat_whites", colour_config["sat_levels"]["whites"])
+			if colour_config.has("sat_output_levels"):
+				outputlog("sat_output_levels applied: " + str(colour_config["sat_output_levels"]),2)
+				shader_material.set_shader_param("sat_out_blacks", colour_config["sat_output_levels"]["out_blacks"])
+				shader_material.set_shader_param("sat_out_whites", colour_config["sat_output_levels"]["out_whites"])
 	
 	# If this is a pattern then set the pattern specific values
 	if colour_config["type"] == "pattern_shapes":

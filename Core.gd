@@ -1116,7 +1116,7 @@ func on_end_pattern_shape():
 # Called when a new node is added to the world
 func on_new_node_added_to_world(node):
 
-	outputlog("on_new_node_added_to_world: " + str(node))
+	outputlog("on_new_node_added_to_world: " + str(node),2)
 
 	if Global.Editor.ActiveToolName in BUILD_THESE_TOOLS:
 		# Exclude the pattern shape tool as it behaves oddly before the shape is complete.

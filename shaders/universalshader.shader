@@ -4,6 +4,15 @@ uniform float min_gray = 0.0; // Adjusts the darkest level
 uniform float max_gray = 1.0; // Ensures brightest point is white
 uniform bool apply_grayscale = false; // Boolean to determine if we should try and apply grayscale or gradient to the asset
 uniform float saturation = 1.0; // saturation change
+uniform float hue_shift = 0.0; // hue shift (-1.0 to 1.0)
+uniform float lightness = 0.0; // lightness adjustment (-1.0 to 1.0, 0.0 = no change)
+uniform float contrast = 0.0; // contrast adjustment (-1.0 to 1.0, 0.0 = no change)
+uniform bool invert = false; // invert colors (negative)
+uniform float sat_blacks = 0.0; // input black point (0.0 to 1.0) - pixels at this value become black
+uniform float sat_midtones = 1.0; // gamma/midtones (0.1 to 3.0, 1.0 = neutral)
+uniform float sat_whites = 1.0; // input white point (0.0 to 1.0) - pixels at this value become white
+uniform float sat_out_blacks = 0.0; // output black level (0.0 to 1.0) - black pixels become this value
+uniform float sat_out_whites = 1.0; // output white level (0.0 to 1.0) - white pixels become this value
 uniform bool apply_saturation = false; // Boolean to determine if we should try and apply a saturation change
 
 uniform sampler2D gradient_tex; // Holds the gradient
@@ -86,6 +95,23 @@ vec2 rotate_uv(vec2 uv, float r)
 		cos(r) * (uv.x - mid) + sin(r) * (uv.y - mid) + mid,
 		cos(r) * (uv.y - mid) - sin(r) * (uv.x - mid) + mid
 	);
+}
+
+// RGB to HSV conversion
+vec3 rgb2hsv(vec3 c) {
+	vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+	vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+	vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+	float d = q.x - min(q.w, q.y);
+	float e = 1.0e-10;
+	return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+// HSV to RGB conversion
+vec3 hsv2rgb(vec3 c) {
+	vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+	return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
 }
 
 float posmod(float x, float y) { // posmod function
@@ -271,11 +297,64 @@ void fragment()
 			{
 				COLOR = vec4(vec3(min_gray), color.a); // Ignore the brightness of the texture but use its alpha
 			}
-			else if(apply_saturation) // if we are applying a saturation factor
+			else if(apply_saturation) // if we are applying a saturation factor, hue shift, and/or levels
 			{
 				// Normalize grayscale to fit within min_gray and max_gray
 				gray = clamp((gray - min_gray) / (max_gray - min_gray), 0.0, 1.0);
 				vec3 saturation_color = mix(vec3(gray), color.rgb, saturation);
+				
+				// Apply hue shift if non-zero
+				if (abs(hue_shift) > 0.001) {
+					vec3 hsv = rgb2hsv(saturation_color);
+					hsv.x = fract(hsv.x + hue_shift * 0.5); // Shift hue and wrap around [0,1], multiplied by 0.5 so -1 to +1 covers one full rotation
+					saturation_color = hsv2rgb(hsv);
+				}
+				
+				// Apply lightness adjustment if non-zero
+				if (abs(lightness) > 0.001) {
+					if (lightness > 0.0) {
+						// Positive lightness: blend towards white
+						saturation_color = mix(saturation_color, vec3(1.0), lightness);
+					} else {
+						// Negative lightness: blend towards black
+						saturation_color = mix(saturation_color, vec3(0.0), -lightness);
+					}
+				}
+				
+				// Apply contrast adjustment if non-zero
+				if (abs(contrast) > 0.001) {
+					// Contrast formula using power curve for smoother effect
+					// When contrast > 0: increases contrast
+					// When contrast < 0: decreases contrast (blend toward gray)
+					if (contrast > 0.0) {
+						// Increase contrast: use power curve (values move away from 0.5)
+						float contrast_factor = 1.0 + contrast * 2.0;
+						saturation_color = clamp((saturation_color - vec3(0.5)) * contrast_factor + vec3(0.5), 0.0, 1.0);
+					} else {
+						// Decrease contrast: blend toward middle gray (0.5)
+						saturation_color = mix(saturation_color, vec3(0.5), -contrast);
+					}
+				}
+				
+				// Apply invert (negative) if enabled
+				if (invert) {
+					saturation_color = vec3(1.0) - saturation_color;
+				}
+				
+				// Apply Input Levels adjustment (like Photoshop)
+				// sat_blacks = input black point: values <= this become 0 (black)
+				// sat_whites = input white point: values >= this become 1 (white)
+				// First, remap the range [sat_blacks, sat_whites] to [0, 1]
+				float range = max(sat_whites - sat_blacks, 0.001); // avoid division by zero
+				saturation_color = clamp((saturation_color - vec3(sat_blacks)) / range, 0.0, 1.0);
+				
+				// Then apply gamma (midtones)
+				saturation_color = pow(saturation_color, vec3(1.0 / sat_midtones));
+				
+				// Apply Output Levels adjustment (like Photoshop)
+				// Remap from [0, 1] to [sat_out_blacks, sat_out_whites]
+				saturation_color = mix(vec3(sat_out_blacks), vec3(sat_out_whites), saturation_color);
+				
 				COLOR = vec4(saturation_color, color.a);
 				
 			}

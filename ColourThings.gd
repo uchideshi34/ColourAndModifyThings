@@ -87,6 +87,44 @@ func make_label(section,text,index):
 	section.move_child(mylabel,index)
 	return mylabel
 
+# Convert linear slider value (0-1) to non-linear gamma value (0.01-9.99 with 1.0 at center)
+# slider=0 -> gamma=0.01, slider=0.5 -> gamma=1.0, slider=1 -> gamma=9.99
+func slider_to_gamma(slider_value: float) -> float:
+	if slider_value <= 0.5:
+		# Map 0-0.5 to 0.01-1.0 (exponential curve)
+		return 0.01 + (1.0 - 0.01) * pow(slider_value * 2.0, 2.0)
+	else:
+		# Map 0.5-1 to 1.0-9.99 (exponential curve)
+		return 1.0 + (9.99 - 1.0) * pow((slider_value - 0.5) * 2.0, 2.0)
+
+# Convert gamma value (0.01-9.99) to linear slider value (0-1)
+func gamma_to_slider(gamma_value: float) -> float:
+	if gamma_value <= 1.0:
+		# Map 0.01-1.0 to 0-0.5
+		return sqrt((gamma_value - 0.01) / (1.0 - 0.01)) * 0.5
+	else:
+		# Map 1.0-9.99 to 0.5-1
+		return 0.5 + sqrt((gamma_value - 1.0) / (9.99 - 1.0)) * 0.5
+
+# Convert linear slider value (0-1) to non-linear saturation value (0.0-4.0 with 1.0 at center)
+# slider=0 -> sat=0.0, slider=0.5 -> sat=1.0, slider=1 -> sat=4.0
+func slider_to_saturation(slider_value: float) -> float:
+	if slider_value <= 0.5:
+		# Map 0-0.5 to 0.0-1.0 (quadratic curve)
+		return pow(slider_value * 2.0, 2.0)
+	else:
+		# Map 0.5-1 to 1.0-4.0 (quadratic curve)
+		return 1.0 + (4.0 - 1.0) * pow((slider_value - 0.5) * 2.0, 2.0)
+
+# Convert saturation value (0.0-4.0) to linear slider value (0-1)
+func saturation_to_slider(sat_value: float) -> float:
+	if sat_value <= 1.0:
+		# Map 0.0-1.0 to 0-0.5
+		return sqrt(sat_value) * 0.5
+	else:
+		# Map 1.0-4.0 to 0.5-1
+		return 0.5 + sqrt((sat_value - 1.0) / (4.0 - 1.0)) * 0.5
+
 # Function to see if a structure that looks like a copied dd data entry is the same
 func is_the_same(a, b) -> bool:
 
@@ -289,7 +327,7 @@ func make_overridecolour_ui(tool_type: String, location: String):
 	var vbox
 	var find_text = ["CUSTOM COLOR","CUSTOM_COLOR","TRANSITION_IN","TRANSITION IN","COLOR","STYLE"]
 	var hint_tooltips = {
-		"saturate_button": "When enabled, changes the saturation of the underlying asset colours.",
+		"saturate_button": "When enabled, allows to change the gamma, saturation, hue, lightness, contrast and input/output levels of the underlying asset colours. Can also invert colors.",
 		"normalise_button": "When enabled, normalises the grayscale values so the brightest part of the asset is white and the darkest is black. There may be a delay when this option is used for large base images.",
 		"set_white_button": "When enabled, convert all colours to full white preserving alpha values only.",
 		"gradient_button": "When enabled, a gradient map will be applied to the asset.",
@@ -373,22 +411,122 @@ func make_overridecolour_ui(tool_type: String, location: String):
 	ui_element["levels_default_button"].pressed = true
 	ui_element["levels_default_button"].connect("toggled", self, "_on_levels_default_button_pressed",[tool_type,location])
 
-	# Make saturation slider
-	ui_element["saturation_slider"] = NewHSlider.new(vbox, 1.0, 0.0, 4.0, 0.01, false)
-	vbox.move_child(ui_element["saturation_slider"].hbox,index)
-	ui_element["saturation_label"] = make_label(vbox,"Saturation",index)
-	ui_element["saturation_slider"].hbox.visible = false
-	ui_element["saturation_label"].visible = false
-	ui_element["saturation_slider"].connect("emit_history_event_signal", self, "create_update_custom_history",[null,tool_type,location,0.0])
+	# === SATURATION MODE SLIDERS ===
+	# Order of creation is reversed because move_child places them at the same index
+	# Desired display order: Gamma, Saturation, Hue, Lightness, Contrast, In, Out, Invert Colors
+	# So we create: Invert Colors, Output Levels, Input Levels, Contrast, Lightness, Hue, Saturation, Gamma
 	
+	# Make invert colors toggle button (icon style like Dungeondraft)
+	ui_element["invert_hbox"] = HBoxContainer.new()
+	vbox.add_child(ui_element["invert_hbox"])
+	vbox.move_child(ui_element["invert_hbox"],index)
+	make_label(ui_element["invert_hbox"],"Invert Colors",0)
+	ui_element["invert_button"] = Button.new()
+	ui_element["invert_button"].toggle_mode = true
+	ui_element["invert_button"].pressed = false
+	ui_element["invert_button"].icon = load_image_texture("icons/white-circle-icon.png")
+	ui_element["invert_hbox"].add_child(ui_element["invert_button"])
+	ui_element["invert_hbox"].visible = false
+	ui_element["invert_button"].connect("toggled", self, "_on_invert_button_toggled",[tool_type,location])
+	# Spacer to push Reset All button to the right
+	var reset_all_spacer = Control.new()
+	reset_all_spacer.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ui_element["invert_hbox"].add_child(reset_all_spacer)
+	# Reset all button (25% smaller icon) with text
+	ui_element["reset_all_button"] = make_button(ui_element["invert_hbox"], "icons/rotate-32.png", "Reset all HSL adjustments to default", false, 0.75)
+	ui_element["reset_all_button"].text = "Reset All"
+	ui_element["reset_all_button"].connect("pressed", self, "_on_reset_all_hsl_pressed",[tool_type,location])
+	
+	# Make output levels - HBox container with label, slider and reset button on same line
+	ui_element["sat_output_levels_hbox"] = HBoxContainer.new()
+	vbox.add_child(ui_element["sat_output_levels_hbox"])
+	vbox.move_child(ui_element["sat_output_levels_hbox"],index)
+	make_label(ui_element["sat_output_levels_hbox"],"Out",0)
+	ui_element["sat_output_levels_slider"] = tool_panel.CreateRange("new_sat_output_levels_slider_"+str(tool_type)+str(location), 0.0, 1.0, 0.01, 0.0, 1.0)
+	if location == "select":
+		tool_panel.Align.remove_child(ui_element["sat_output_levels_slider"])
+	ui_element["sat_output_levels_hbox"].add_child(ui_element["sat_output_levels_slider"])
+	ui_element["sat_output_levels_slider"].size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ui_element["sat_output_levels_hbox"].visible = false
+	# Reset button for output levels (25% smaller icon)
+	ui_element["sat_output_levels_reset_button"] = make_button(ui_element["sat_output_levels_hbox"], "icons/rotate-32.png", "Reset output levels to default (0.0 - 1.0)", false, 0.75)
+	ui_element["sat_output_levels_reset_button"].connect("pressed", self, "_on_sat_output_levels_reset_pressed",[tool_type,location])
+	
+	# Make input levels - HBox container with label, slider and reset button on same line
+	ui_element["sat_levels_hbox"] = HBoxContainer.new()
+	vbox.add_child(ui_element["sat_levels_hbox"])
+	vbox.move_child(ui_element["sat_levels_hbox"],index)
+	make_label(ui_element["sat_levels_hbox"],"In",0)
+	ui_element["sat_levels_slider"] = tool_panel.CreateRange("new_sat_levels_slider_"+str(tool_type)+str(location), 0.0, 1.0, 0.01, 0.0, 1.0)
+	if location == "select":
+		tool_panel.Align.remove_child(ui_element["sat_levels_slider"])
+	ui_element["sat_levels_hbox"].add_child(ui_element["sat_levels_slider"])
+	ui_element["sat_levels_slider"].size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	ui_element["sat_levels_hbox"].visible = false
+	# Reset button for input levels (25% smaller icon)
+	ui_element["sat_levels_reset_button"] = make_button(ui_element["sat_levels_hbox"], "icons/rotate-32.png", "Reset input levels to default (0.0 - 1.0)", false, 0.75)
+	ui_element["sat_levels_reset_button"].connect("pressed", self, "_on_sat_levels_reset_pressed",[tool_type,location])
+	
+	# Make contrast slider - label on same line, range -1 to +1 (0 = no change)
+	ui_element["contrast_slider"] = NewHSlider.new(vbox, 0.0, -1.0, 1.0, 0.01, false)
+	vbox.move_child(ui_element["contrast_slider"].hbox,index)
+	make_label(ui_element["contrast_slider"].hbox,"Contrast",0)
+	ui_element["contrast_slider"].hbox.visible = false
+	ui_element["contrast_slider"].connect("emit_history_event_signal", self, "create_update_custom_history",[null,tool_type,location,0.0])
+	# Reset button for contrast (25% smaller icon)
+	ui_element["contrast_reset_button"] = make_button(ui_element["contrast_slider"].hbox, "icons/rotate-32.png", "Reset contrast to default (0.0)", false, 0.75)
+	ui_element["contrast_reset_button"].connect("pressed", self, "_on_contrast_reset_pressed",[tool_type,location])
+	
+	# Make lightness slider - label on same line, range -1 to +1 (0 = no change)
+	ui_element["lightness_slider"] = NewHSlider.new(vbox, 0.0, -1.0, 1.0, 0.01, false)
+	vbox.move_child(ui_element["lightness_slider"].hbox,index)
+	make_label(ui_element["lightness_slider"].hbox,"Lightness",0)
+	ui_element["lightness_slider"].hbox.visible = false
+	ui_element["lightness_slider"].connect("emit_history_event_signal", self, "create_update_custom_history",[null,tool_type,location,0.0])
+	# Reset button for lightness (25% smaller icon)
+	ui_element["lightness_reset_button"] = make_button(ui_element["lightness_slider"].hbox, "icons/rotate-32.png", "Reset lightness to default (0.0)", false, 0.75)
+	ui_element["lightness_reset_button"].connect("pressed", self, "_on_lightness_reset_pressed",[tool_type,location])
+	
+	# Make hue slider - label on same line as slider
+	ui_element["hue_slider"] = NewHSlider.new(vbox, 0.0, -1.0, 1.0, 0.01, false)
+	vbox.move_child(ui_element["hue_slider"].hbox,index)
+	make_label(ui_element["hue_slider"].hbox,"Hue",0)
+	ui_element["hue_slider"].hbox.visible = false
+	ui_element["hue_slider"].connect("emit_history_event_signal", self, "create_update_custom_history",[null,tool_type,location,0.0])
+	# Reset button for hue (25% smaller icon)
+	ui_element["hue_reset_button"] = make_button(ui_element["hue_slider"].hbox, "icons/rotate-32.png", "Reset hue to default (0.0)", false, 0.75)
+	ui_element["hue_reset_button"].connect("pressed", self, "_on_hue_reset_pressed",[tool_type,location])
+	
+	# Make saturation slider - label on same line, slider goes 0 to 1, converted to non-linear saturation (0.0 to 4.0 with 1.0 at center)
+	ui_element["saturation_slider"] = NewHSlider.new(vbox, 0.5, 0.0, 1.0, 0.01, false)
+	vbox.move_child(ui_element["saturation_slider"].hbox,index)
+	make_label(ui_element["saturation_slider"].hbox,"Saturation",0)
+	ui_element["saturation_slider"].hbox.visible = false
+	ui_element["saturation_slider"].connect("emit_history_event_signal", self, "create_update_custom_history",[null,tool_type,location,0.0])
+	# Reset button for saturation (25% smaller icon)
+	ui_element["saturation_reset_button"] = make_button(ui_element["saturation_slider"].hbox, "icons/rotate-32.png", "Reset saturation to default (1.0)", false, 0.75)
+	ui_element["saturation_reset_button"].connect("pressed", self, "_on_saturation_reset_pressed",[tool_type,location])
+	
+	# Midtones/gamma slider - label on same line, slider goes 0 to 1, converted to non-linear gamma (0.01 to 9.99 with 1.0 at center)
+	ui_element["sat_midtones_slider"] = NewHSlider.new(vbox, 0.5, 0.0, 1.0, 0.01, false)
+	vbox.move_child(ui_element["sat_midtones_slider"].hbox,index)
+	make_label(ui_element["sat_midtones_slider"].hbox,"Gamma",0)
+	ui_element["sat_midtones_slider"].hbox.visible = false
+	ui_element["sat_midtones_slider"].connect("emit_history_event_signal", self, "create_update_custom_history",[null,tool_type,location,0.0])
+	# Reset button for gamma (25% smaller icon)
+	ui_element["sat_midtones_reset_button"] = make_button(ui_element["sat_midtones_slider"].hbox, "icons/rotate-32.png", "Reset gamma to default (1.0)", false, 0.75)
+	ui_element["sat_midtones_reset_button"].connect("pressed", self, "_on_sat_midtones_reset_pressed",[tool_type,location])
 	
 	# Make the colour palette if it isn't a Pattern or Wall tool
 	if not tool_type in ["PatternShapeTool","WallTool"]:
 
-		# Make opacity slider
-		ui_element["opacity_slider"] = NewHSlider.new(vbox, 255, 0, 255, 1, false)
+		# Make opacity slider (0.0 to 1.0)
+		ui_element["opacity_slider"] = NewHSlider.new(vbox, 1.0, 0.0, 1.0, 0.01, false)
 		vbox.move_child(ui_element["opacity_slider"].hbox,index)
 		make_label(ui_element["opacity_slider"].hbox,"Opacity",0)
+		# Reset button for opacity (25% smaller icon)
+		ui_element["opacity_reset_button"] = make_button(ui_element["opacity_slider"].hbox, "icons/rotate-32.png", "Reset opacity to default (1.0)", false, 0.75)
+		ui_element["opacity_reset_button"].connect("pressed", self, "_on_opacity_reset_pressed",[tool_type,location])
 
 		# If we are in the main scatter tool, then we want to be able to select multiple colour preset
 		if tool_type == "ScatterTool" && location == "main":
@@ -464,13 +602,43 @@ func make_overridecolour_ui(tool_type: String, location: String):
 	# On saturation slider change
 	ui_element["saturation_slider"].connect("value_changed",self,"_on_saturation_slider_value_changed",[tool_type,location])
 
-# Make a button and return it
-func make_button(parent_node, icon_path: String, hint_tooltip: String, toggle_mode: bool) -> Button:
+	# On hue slider change
+	ui_element["hue_slider"].connect("value_changed",self,"_on_hue_slider_value_changed",[tool_type,location])
+
+	# On lightness slider change
+	ui_element["lightness_slider"].connect("value_changed",self,"_on_lightness_slider_value_changed",[tool_type,location])
+
+	# On contrast slider change
+	ui_element["contrast_slider"].connect("value_changed",self,"_on_contrast_slider_value_changed",[tool_type,location])
+
+	# On saturation levels sliders change (double slider for blacks/whites)
+	ui_element["sat_levels_slider"].minSlider.connect("value_changed",self,"_on_sat_levels_slider_value_changed",[tool_type,location])
+	ui_element["sat_levels_slider"].maxSlider.connect("value_changed",self,"_on_sat_levels_slider_value_changed",[tool_type,location])
+	ui_element["sat_midtones_slider"].connect("value_changed",self,"_on_sat_levels_slider_value_changed",[tool_type,location])
+
+	# On output levels sliders change
+	ui_element["sat_output_levels_slider"].minSlider.connect("value_changed",self,"_on_sat_levels_slider_value_changed",[tool_type,location])
+	ui_element["sat_output_levels_slider"].maxSlider.connect("value_changed",self,"_on_sat_levels_slider_value_changed",[tool_type,location])
+
+# Make a button and return it, with optional icon scale (default 1.0, use 0.75 for 25% smaller)
+func make_button(parent_node, icon_path: String, hint_tooltip: String, toggle_mode: bool, icon_scale: float = 1.0) -> Button:
 
 	var button = Button.new()
 	button.toggle_mode = toggle_mode
-	button.icon = load_image_texture(icon_path)
 	button.hint_tooltip = hint_tooltip
+	
+	var texture = load_image_texture(icon_path)
+	if icon_scale != 1.0 && texture != null:
+		# Create a scaled version of the icon
+		var image = texture.get_data()
+		var new_size = Vector2(image.get_width() * icon_scale, image.get_height() * icon_scale)
+		image.resize(int(new_size.x), int(new_size.y), Image.INTERPOLATE_LANCZOS)
+		var scaled_texture = ImageTexture.new()
+		scaled_texture.create_from_image(image)
+		button.icon = scaled_texture
+	else:
+		button.icon = texture
+	
 	parent_node.add_child(button)
 	return button
 
@@ -600,7 +768,7 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 		# Update the colour of the palette (with triggering a signal so all selected nodes update)
 		if not tool_type in NON_CUSTOM_PALETTE_TOOLS:
 			ui_element["palette"].SetColor(Color(node_data["colour"]),false)
-			ui_element["opacity_slider"].slider_and_spinbox_change(int(Color(node_data["colour"]).a * 255),true)
+			ui_element["opacity_slider"].slider_and_spinbox_change(Color(node_data["colour"]).a,true)
 
 		# When we are using the DD custom colour palette, then force set the palette to the node item. This should be redundant but may cause race condition issues
 		else:
@@ -638,7 +806,37 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 			
 			"saturation":
 				if node_data.has("saturation"):
-					ui_element["saturation_slider"].slider_and_spinbox_change(node_data["saturation"], true)
+					ui_element["saturation_slider"].slider_and_spinbox_change(saturation_to_slider(node_data["saturation"]), true)
+				if node_data.has("hue_shift"):
+					ui_element["hue_slider"].slider_and_spinbox_change(node_data["hue_shift"], true)
+				else:
+					ui_element["hue_slider"].slider_and_spinbox_change(0.0, true)
+				if node_data.has("lightness"):
+					ui_element["lightness_slider"].slider_and_spinbox_change(node_data["lightness"], true)
+				else:
+					ui_element["lightness_slider"].slider_and_spinbox_change(0.0, true)
+				if node_data.has("contrast"):
+					ui_element["contrast_slider"].slider_and_spinbox_change(node_data["contrast"], true)
+				else:
+					ui_element["contrast_slider"].slider_and_spinbox_change(0.0, true)
+				if node_data.has("invert"):
+					set_property_but_block_signals(ui_element["invert_button"], "pressed", node_data["invert"])
+				else:
+					set_property_but_block_signals(ui_element["invert_button"], "pressed", false)
+				if node_data.has("sat_levels"):
+					set_property_but_block_signals(ui_element["sat_levels_slider"].minSlider, "value", node_data["sat_levels"]["blacks"])
+					set_property_but_block_signals(ui_element["sat_levels_slider"].maxSlider, "value", node_data["sat_levels"]["whites"])
+					ui_element["sat_midtones_slider"].slider_and_spinbox_change(gamma_to_slider(node_data["sat_levels"]["midtones"]), true)
+				else:
+					set_property_but_block_signals(ui_element["sat_levels_slider"].minSlider, "value", 0.0)
+					set_property_but_block_signals(ui_element["sat_levels_slider"].maxSlider, "value", 1.0)
+					ui_element["sat_midtones_slider"].slider_and_spinbox_change(0.5, true)
+				if node_data.has("sat_output_levels"):
+					set_property_but_block_signals(ui_element["sat_output_levels_slider"].minSlider, "value", node_data["sat_output_levels"]["out_blacks"])
+					set_property_but_block_signals(ui_element["sat_output_levels_slider"].maxSlider, "value", node_data["sat_output_levels"]["out_whites"])
+				else:
+					set_property_but_block_signals(ui_element["sat_output_levels_slider"].minSlider, "value", 0.0)
+					set_property_but_block_signals(ui_element["sat_output_levels_slider"].maxSlider, "value", 1.0)
 		
 		outputlog("get colour config: " + str(get_colour_config_from_ui(tool_type, location)),3)
 		_on_colour_option_button_pressed(true, node_data["shader_type"], tool_type, location, false)
@@ -648,9 +846,21 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 		# Reset to white
 		if not tool_type in NON_CUSTOM_PALETTE_TOOLS:
 			ui_config[tool_type][location]["palette"].SetColor(Color.white,false)
-			ui_element["opacity_slider"].slider_and_spinbox_change(255,true)
+			ui_element["opacity_slider"].slider_and_spinbox_change(1.0,true)
 		else:
 			force_refresh_dd_custom_colour_ui_from_selected_node(node, tool_type)
+
+		# Reset all saturation mode sliders to default values
+		ui_element["saturation_slider"].slider_and_spinbox_change(0.5, true)
+		ui_element["hue_slider"].slider_and_spinbox_change(0.0, true)
+		ui_element["lightness_slider"].slider_and_spinbox_change(0.0, true)
+		ui_element["contrast_slider"].slider_and_spinbox_change(0.0, true)
+		set_property_but_block_signals(ui_element["invert_button"], "pressed", false)
+		set_property_but_block_signals(ui_element["sat_levels_slider"].minSlider, "value", 0.0)
+		set_property_but_block_signals(ui_element["sat_levels_slider"].maxSlider, "value", 1.0)
+		ui_element["sat_midtones_slider"].slider_and_spinbox_change(0.5, true)
+		set_property_but_block_signals(ui_element["sat_output_levels_slider"].minSlider, "value", 0.0)
+		set_property_but_block_signals(ui_element["sat_output_levels_slider"].maxSlider, "value", 1.0)
 
 		_on_colour_option_button_pressed(true, "none", tool_type, location, false)
 	
@@ -754,7 +964,20 @@ func get_colour_config_from_ui(tool_type: String, location: String, debug: bool 
 			colour_config["gradient"] = ui_config["gradient_map"].get_gradient_data(debug)
 		
 		"saturation":
-			colour_config["saturation"] = ui_element["saturation_slider"].value
+			colour_config["saturation"] = slider_to_saturation(ui_element["saturation_slider"].value)
+			colour_config["hue_shift"] = ui_element["hue_slider"].value
+			colour_config["lightness"] = ui_element["lightness_slider"].value
+			colour_config["contrast"] = ui_element["contrast_slider"].value
+			colour_config["invert"] = ui_element["invert_button"].pressed
+			colour_config["sat_levels"] = {
+				"blacks": ui_element["sat_levels_slider"].minSlider.value,
+				"midtones": slider_to_gamma(ui_element["sat_midtones_slider"].value),
+				"whites": ui_element["sat_levels_slider"].maxSlider.value
+			}
+			colour_config["sat_output_levels"] = {
+				"out_blacks": ui_element["sat_output_levels_slider"].minSlider.value,
+				"out_whites": ui_element["sat_output_levels_slider"].maxSlider.value
+			}
 
 	# For patterns or walls
 	if tool_type in NON_CUSTOM_PALETTE_TOOLS:
@@ -1399,6 +1622,204 @@ func _on_saturation_slider_value_changed(_value: float, tool_type: String, locat
 		"main":
 			set_preview_colour(tool_type, false)
 
+# Function to respond to changes if the hue slider is changed.
+func _on_hue_slider_value_changed(_value: float, tool_type: String, location: String):
+
+	outputlog("_on_hue_slider_value_changed",3)
+
+	# Use call_deferred to ensure the slider value is fully updated before processing
+	call_deferred("_apply_hue_change", tool_type, location)
+
+# Deferred function to apply hue change after slider value is synchronized
+func _apply_hue_change(tool_type: String, location: String):
+
+	# Update the stored ui config
+	refresh_combined_ui_stored_state(tool_type, location)
+
+	# Only make an active change if there is something selected
+	match location:
+		"select":
+			set_colour_of_selection(tool_type, false)
+	
+		# If we are in the main location and the preview button is enabled then update the preview
+		"main":
+			set_preview_colour(tool_type, false)
+
+# Function to respond to changes if any saturation levels slider is changed.
+func _on_sat_levels_slider_value_changed(_value: float, tool_type: String, location: String):
+
+	outputlog("_on_sat_levels_slider_value_changed",3)
+
+	# Update the stored ui config
+	refresh_combined_ui_stored_state(tool_type, location)
+
+	# Only make an active change if there is something selected
+	match location:
+		"select":
+			set_colour_of_selection(tool_type, false)
+	
+		# If we are in the main location and the preview button is enabled then update the preview
+		"main":
+			set_preview_colour(tool_type, false)
+
+# Function to respond to changes if the lightness slider is changed.
+func _on_lightness_slider_value_changed(_value: float, tool_type: String, location: String):
+
+	outputlog("_on_lightness_slider_value_changed",3)
+
+	# Use call_deferred to ensure the slider value is fully updated before processing
+	call_deferred("_apply_lightness_change", tool_type, location)
+
+# Deferred function to apply lightness change after slider value is synchronized
+func _apply_lightness_change(tool_type: String, location: String):
+
+	# Update the stored ui config
+	refresh_combined_ui_stored_state(tool_type, location)
+
+	# Only make an active change if there is something selected
+	match location:
+		"select":
+			set_colour_of_selection(tool_type, false)
+	
+		# If we are in the main location and the preview button is enabled then update the preview
+		"main":
+			set_preview_colour(tool_type, false)
+
+# Function to respond to changes if the contrast slider is changed.
+func _on_contrast_slider_value_changed(_value: float, tool_type: String, location: String):
+
+	outputlog("_on_contrast_slider_value_changed",3)
+
+	# Use call_deferred to ensure the slider value is fully updated before processing
+	call_deferred("_apply_contrast_change", tool_type, location)
+
+# Deferred function to apply contrast change after slider value is synchronized
+func _apply_contrast_change(tool_type: String, location: String):
+
+	# Update the stored ui config
+	refresh_combined_ui_stored_state(tool_type, location)
+
+	# Only make an active change if there is something selected
+	match location:
+		"select":
+			set_colour_of_selection(tool_type, false)
+	
+		# If we are in the main location and the preview button is enabled then update the preview
+		"main":
+			set_preview_colour(tool_type, false)
+
+# Function to respond to changes if the invert button is toggled
+func _on_invert_button_toggled(pressed: bool, tool_type: String, location: String):
+
+	outputlog("_on_invert_button_toggled",3)
+
+	# Update the stored ui config
+	refresh_combined_ui_stored_state(tool_type, location)
+
+	# Only make an active change if there is something selected
+	match location:
+		"select":
+			set_colour_of_selection(tool_type, false)
+			create_update_custom_history(null, tool_type, location, 0.0)
+	
+		# If we are in the main location and the preview button is enabled then update the preview
+		"main":
+			set_preview_colour(tool_type, false)
+
+# Function to reset saturation slider to default
+func _on_saturation_reset_pressed(tool_type: String, location: String):
+	outputlog("_on_saturation_reset_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	ui_element["saturation_slider"].slider_and_spinbox_change(0.5, false)
+	_on_saturation_slider_value_changed(0.5, tool_type, location)
+	create_update_custom_history(null, tool_type, location, 0.0)
+
+# Function to reset hue slider to default
+func _on_hue_reset_pressed(tool_type: String, location: String):
+	outputlog("_on_hue_reset_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	ui_element["hue_slider"].slider_and_spinbox_change(0.0, false)
+	_on_hue_slider_value_changed(0.0, tool_type, location)
+	create_update_custom_history(null, tool_type, location, 0.0)
+
+# Function to reset input levels slider to default
+func _on_sat_levels_reset_pressed(tool_type: String, location: String):
+	outputlog("_on_sat_levels_reset_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	set_property_but_block_signals(ui_element["sat_levels_slider"].minSlider, "value", 0.0)
+	set_property_but_block_signals(ui_element["sat_levels_slider"].maxSlider, "value", 1.0)
+	_on_sat_levels_slider_value_changed(0.0, tool_type, location)
+	create_update_custom_history(null, tool_type, location, 0.0)
+
+# Function to reset gamma/midtones slider to default
+func _on_sat_midtones_reset_pressed(tool_type: String, location: String):
+	outputlog("_on_sat_midtones_reset_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	ui_element["sat_midtones_slider"].slider_and_spinbox_change(0.5, false)
+	_on_sat_levels_slider_value_changed(0.5, tool_type, location)
+	create_update_custom_history(null, tool_type, location, 0.0)
+
+# Function to reset lightness slider to default
+func _on_lightness_reset_pressed(tool_type: String, location: String):
+	outputlog("_on_lightness_reset_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	ui_element["lightness_slider"].slider_and_spinbox_change(0.0, false)
+	_on_lightness_slider_value_changed(0.0, tool_type, location)
+	create_update_custom_history(null, tool_type, location, 0.0)
+
+# Function to reset contrast slider to default
+func _on_contrast_reset_pressed(tool_type: String, location: String):
+	outputlog("_on_contrast_reset_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	ui_element["contrast_slider"].slider_and_spinbox_change(0.0, false)
+	_on_contrast_slider_value_changed(0.0, tool_type, location)
+	create_update_custom_history(null, tool_type, location, 0.0)
+
+# Function to reset output levels slider to default
+func _on_sat_output_levels_reset_pressed(tool_type: String, location: String):
+	outputlog("_on_sat_output_levels_reset_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	set_property_but_block_signals(ui_element["sat_output_levels_slider"].minSlider, "value", 0.0)
+	set_property_but_block_signals(ui_element["sat_output_levels_slider"].maxSlider, "value", 1.0)
+	_on_sat_levels_slider_value_changed(0.0, tool_type, location)
+	create_update_custom_history(null, tool_type, location, 0.0)
+
+# Function to reset all HSL adjustments to default
+func _on_reset_all_hsl_pressed(tool_type: String, location: String):
+	outputlog("_on_reset_all_hsl_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	
+	# Reset all sliders
+	ui_element["sat_midtones_slider"].slider_and_spinbox_change(0.5, true)
+	ui_element["saturation_slider"].slider_and_spinbox_change(0.5, true)
+	ui_element["hue_slider"].slider_and_spinbox_change(0.0, true)
+	ui_element["lightness_slider"].slider_and_spinbox_change(0.0, true)
+	ui_element["contrast_slider"].slider_and_spinbox_change(0.0, true)
+	set_property_but_block_signals(ui_element["sat_levels_slider"].minSlider, "value", 0.0)
+	set_property_but_block_signals(ui_element["sat_levels_slider"].maxSlider, "value", 1.0)
+	set_property_but_block_signals(ui_element["sat_output_levels_slider"].minSlider, "value", 0.0)
+	set_property_but_block_signals(ui_element["sat_output_levels_slider"].maxSlider, "value", 1.0)
+	set_property_but_block_signals(ui_element["invert_button"], "pressed", false)
+	
+	# Update the stored ui config
+	refresh_combined_ui_stored_state(tool_type, location)
+	
+	# Apply changes
+	match location:
+		"select":
+			set_colour_of_selection(tool_type, false)
+			create_update_custom_history(null, tool_type, location, 0.0)
+		"main":
+			set_preview_colour(tool_type, false)
+
+# Function to reset opacity slider to default
+func _on_opacity_reset_pressed(tool_type: String, location: String):
+	outputlog("_on_opacity_reset_pressed",3)
+	var ui_element = ui_config[tool_type][location]
+	ui_element["opacity_slider"].slider_and_spinbox_change(1.0, false)
+	_on_opacity_slider_ui_changed(null, tool_type, location)
+	create_update_custom_history(null, tool_type, location, 0.0)
+
 # Function to update the levels UI to reflect the brightness of the underlying asset
 func set_levels_ui_to_base_asset_brightness(tool_type: String, location: String, node):
 
@@ -1521,6 +1942,18 @@ func _on_reset_button_pressed(tool_type: String, location: String):
 	for button in [ui_element["saturate_button"], ui_element["normalise_button"], ui_element["set_white_button"], ui_element["gradient_button"]]:
 		button.pressed = false
 	
+	# Reset all saturation/HSL mode sliders to default values
+	ui_element["saturation_slider"].slider_and_spinbox_change(0.5, true)
+	ui_element["hue_slider"].slider_and_spinbox_change(0.0, true)
+	ui_element["lightness_slider"].slider_and_spinbox_change(0.0, true)
+	ui_element["contrast_slider"].slider_and_spinbox_change(0.0, true)
+	set_property_but_block_signals(ui_element["invert_button"], "pressed", false)
+	set_property_but_block_signals(ui_element["sat_levels_slider"].minSlider, "value", 0.0)
+	set_property_but_block_signals(ui_element["sat_levels_slider"].maxSlider, "value", 1.0)
+	ui_element["sat_midtones_slider"].slider_and_spinbox_change(0.5, true)
+	set_property_but_block_signals(ui_element["sat_output_levels_slider"].minSlider, "value", 0.0)
+	set_property_but_block_signals(ui_element["sat_output_levels_slider"].maxSlider, "value", 1.0)
+	
 	# Update the stored ui config
 	refresh_combined_ui_stored_state(tool_type, location)
 
@@ -1557,7 +1990,13 @@ func set_ui_visibilty_from_colour_options_change(button_pressed: bool, source_sh
 	ui_element["levels_slider"].visible = (source_shader_type == "normalised" && button_pressed)
 	ui_element["levels_hbox"].visible = (source_shader_type == "normalised" && button_pressed)
 	ui_element["saturation_slider"].hbox.visible = (source_shader_type == "saturation" && button_pressed)
-	ui_element["saturation_label"].visible = (source_shader_type == "saturation" && button_pressed)
+	ui_element["hue_slider"].hbox.visible = (source_shader_type == "saturation" && button_pressed)
+	ui_element["lightness_slider"].hbox.visible = (source_shader_type == "saturation" && button_pressed)
+	ui_element["contrast_slider"].hbox.visible = (source_shader_type == "saturation" && button_pressed)
+	ui_element["invert_hbox"].visible = (source_shader_type == "saturation" && button_pressed)
+	ui_element["sat_levels_hbox"].visible = (source_shader_type == "saturation" && button_pressed)
+	ui_element["sat_midtones_slider"].hbox.visible = (source_shader_type == "saturation" && button_pressed)
+	ui_element["sat_output_levels_hbox"].visible = (source_shader_type == "saturation" && button_pressed)
 
 	if source_shader_type == "gradient" && button_pressed:
 		ui_config["gradient_map"].show()
@@ -1627,7 +2066,7 @@ func _on_tintcolour_ui_changed(_ignore_this, tool_type: String, location: String
 
 	# Sync the opacity slider to the new value
 	var colour_config = get_colour_config_from_ui(tool_type, location)
-	ui_config[tool_type][location]["opacity_slider"].slider_and_spinbox_change(int(Color(colour_config["colour"]).a * 255),true)
+	ui_config[tool_type][location]["opacity_slider"].slider_and_spinbox_change(Color(colour_config["colour"]).a,true)
 	
 	# Call the function to act on the new change
 	_on_tintcolour_changed(null, tool_type, location)
@@ -1637,7 +2076,7 @@ func _on_opacity_slider_ui_changed(_ignore_this, tool_type: String, location: St
 
 	# Update the tint colour
 	var color = ui_config[tool_type][location]["palette"].color
-	color.a = ui_config[tool_type][location]["opacity_slider"].value / 255.0
+	color.a = ui_config[tool_type][location]["opacity_slider"].value
 	ui_config[tool_type][location]["palette"].SetColor(color,false)
 
 	# Call the function to act on the new change
