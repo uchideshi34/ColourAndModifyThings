@@ -443,8 +443,7 @@ func make_overridecolour_ui(tool_type: String, location: String):
 	vbox.move_child(ui_element["sat_output_levels_hbox"],index)
 	make_label(ui_element["sat_output_levels_hbox"],"Out",0)
 	ui_element["sat_output_levels_slider"] = tool_panel.CreateRange("new_sat_output_levels_slider_"+str(tool_type)+str(location), 0.0, 1.0, 0.01, 0.0, 1.0)
-	if location == "select":
-		tool_panel.Align.remove_child(ui_element["sat_output_levels_slider"])
+	tool_panel.Align.remove_child(ui_element["sat_output_levels_slider"])
 	ui_element["sat_output_levels_hbox"].add_child(ui_element["sat_output_levels_slider"])
 	ui_element["sat_output_levels_slider"].size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ui_element["sat_output_levels_hbox"].visible = false
@@ -458,8 +457,7 @@ func make_overridecolour_ui(tool_type: String, location: String):
 	vbox.move_child(ui_element["sat_levels_hbox"],index)
 	make_label(ui_element["sat_levels_hbox"],"In",0)
 	ui_element["sat_levels_slider"] = tool_panel.CreateRange("new_sat_levels_slider_"+str(tool_type)+str(location), 0.0, 1.0, 0.01, 0.0, 1.0)
-	if location == "select":
-		tool_panel.Align.remove_child(ui_element["sat_levels_slider"])
+	tool_panel.Align.remove_child(ui_element["sat_levels_slider"])
 	ui_element["sat_levels_hbox"].add_child(ui_element["sat_levels_slider"])
 	ui_element["sat_levels_slider"].size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	ui_element["sat_levels_hbox"].visible = false
