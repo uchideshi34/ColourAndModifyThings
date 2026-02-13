@@ -178,7 +178,7 @@ void fragment()
 	}
 
 
-	float splatSum = h1 + h2 + h3 + h3 + h4;
+	float splatSum = h1 + h2 + h3 + h4;
 	vec3 albedo = t1.rgb * h1 + t2.rgb * h2 + t3.rgb * h3 + t4.rgb * h4;
 	albedo /= splatSum;
 

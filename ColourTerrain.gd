@@ -775,7 +775,7 @@ func make_gradient_atlas(gradients: Array, width := 256) -> ImageTexture:
 func _on_reset_button_pressed(tool_type: String, location: String):
 
 	if tool_type == "TerrainBrush" && not active_terrain_index < 0:
-		var reset_colour_config = merge_dict(get_colour_config_from_terrain_ui(),DEFAULT_COLOUR_DATA.duplicate(true))
+		var reset_colour_config = merge_dict(get_colour_config_from_terrain_ui(),DEFAULT_TERRAIN_DATA.duplicate(true))
 		set_terrain_colour(active_terrain_index,reset_colour_config)
 		update_terrain_colour_ui_to_terrain(active_terrain_index,reset_colour_config)
 		create_update_custom_history()
@@ -1071,6 +1071,25 @@ func refresh_terrain_ui_from_stored_values():
 func on_item_selected_in_leveloptions(index: int):
 
 	refresh_terrain_ui_from_stored_values()
+
+func make_full_reset_ui(tool_type: String, location: String):
+
+	var ui_element = ui_config["TerrainBrush"]["main"]
+
+	ui_element["full_reset_button"] = make_button(global.Editor.Toolset.GetToolPanel(tool_type).Align, "icons/rotate-32.png","Reset all terrain colours to default.", false)
+	ui_element["full_reset_button"].text = "Reset All"
+	ui_element["full_reset_button"].connect("pressed", self, "_on_full_reset_button_pressed",[tool_type,location])
+
+
+func _on_full_reset_button_pressed(tool_type: String, location: String):
+
+	if tool_type == "TerrainBrush":
+		for _i in 8:
+			var reset_colour_config = merge_dict(get_colour_config_from_terrain_ui(),DEFAULT_TERRAIN_DATA.duplicate(true))
+			set_terrain_colour(_i,reset_colour_config)
+			update_terrain_colour_ui_to_terrain(_i,reset_colour_config)
+		create_update_custom_history()
+
 
 #########################################################################################################
 ##
@@ -1385,6 +1404,7 @@ func initialise() -> void:
 	make_rotation_slider_for_terrain("TerrainBrush","main")
 	make_flip_buttons_for_terrain("TerrainBrush","main")
 	make_overridecolour_ui("TerrainBrush","main")
+	make_full_reset_ui("TerrainBrush","main")
 
 	show_hide_terrain_colour_ui(false)
 
