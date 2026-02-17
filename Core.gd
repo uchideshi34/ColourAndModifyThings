@@ -10,6 +10,8 @@ var mod_tool_panel = null
 var _lib_mod_config = null
 
 var store_last_valid_selection = []
+var _store_last_selection_key = ""
+var _wall_point_snapshot = {}  # {node_id: point_count} - tracks wall Line2D point counts to detect splits
 var store_preview_config = {
 	"texture": "",
 	"shader_type": "none",
@@ -118,6 +120,9 @@ func is_the_same(a, b) -> bool:
 
 # Function to look at a node and determine what type it is based on its properties
 func get_node_type(node):
+
+	if node == null or not is_instance_valid(node):
+		return null
 
 	if node.get("WallID") != null:
 		return "portals"
@@ -864,6 +869,7 @@ func initialise_combinedshader():
 	combinedshader.universalshader = ResourceLoader.load(Global.Root + "shaders/universalshader.shader","Shader",true)
 	combinedshader.customdatamanager = customdatamanager
 	combinedshader.reference_to_script = Script
+	combinedshader.build_colorable_hsl_shader()
 
 	if Engine.has_signal("_lib_register_mod"):
 		combinedshader.logging_level = int(_lib_mod_config.combinedshader_log_level)
@@ -967,8 +973,6 @@ func setup_select_tool_options_change():
 # Function to respond when a select tool option becomes visible or hidden
 func on_select_tool_option_visibility_changed(vbox: VBoxContainer, tool_type: String):
 
-	outputlog("on_select_tool_option_visibility_changed: " + str(tool_type) + " visible: " + str(vbox.visible),2)
-
 	# If it has become visible then
 	if vbox.visible:
 		if colourthings != null:
@@ -980,9 +984,16 @@ func has_selection_changed() -> bool:
 
 	outputlog("has_selection_changed: " + str(Global.Editor.Tools["SelectTool"].Selected),4)
 
-	# Check if it has changed from the stored version and update it if it has changed
-	if not is_the_same(store_last_valid_selection, Global.Editor.Tools["SelectTool"].Selected):
-		store_last_valid_selection = Global.Editor.Tools["SelectTool"].Selected
+	# Build a simple key from the current selection's node ids for comparison
+	var current_key = ""
+	var selected = Global.Editor.Tools["SelectTool"].Selected
+	for node in selected:
+		if is_instance_valid(node) and node.has_meta("node_id"):
+			current_key += str(node.get_meta("node_id")) + ","
+	
+	if current_key != _store_last_selection_key:
+		_store_last_selection_key = current_key
+		store_last_valid_selection = selected
 		return true
 	else:
 		return false
@@ -1046,9 +1057,16 @@ func on_signal_from_wall_tool(node: Node2D, signal_name: String):
 	outputlog("on_signal_from_wall_tool: " + str(signal_name),3)
 
 	match signal_name:
-		"OnStartEditWall","OnUpdateEditWall","OnEndEditWall":
+		"OnStartEditWall","OnUpdateEditWall":
 			# Colour resets on a wall when the points are edited so always refresh the node shader
 			combinedshader.refresh_node(node)
+
+		"OnEndEditWall":
+			# Refresh the edited node
+			combinedshader.refresh_node(node)
+			# Also refresh all walls after a short delay to catch wall splits
+			# (DD may create new wall segments from the split)
+			colourthings.propagate_wall_data_after_edit(node, 0.05)
 
 		"OnStartWall", "OnEndWall":
 			pass
@@ -1116,11 +1134,45 @@ func on_end_pattern_shape():
 # Called when a new node is added to the world
 func on_new_node_added_to_world(node):
 
-	outputlog("on_new_node_added_to_world: " + str(node),2)
+	outputlog("on_new_node_added_to_world: " + str(node))
+
+	# Safety checks: skip null nodes
+	if node == null or not is_instance_valid(node):
+		return
+
+	# Wall split detection: when a new wall appears, propagate tint data from the source wall
+	if get_node_type(node) == "walls":
+		if node.has_meta("node_id"):
+			var new_id = node.get_meta("node_id")
+			var source_wall_id = -1
+			
+			# Method 1: Check current selection (SelectTool splits)
+			var selected = Global.Editor.Tools["SelectTool"].Selected
+			if selected.size() > 0 and is_instance_valid(selected[0]) and selected[0].has_meta("node_id"):
+				var sel_id = selected[0].get_meta("node_id")
+				if sel_id != new_id and customdatamanager.has_data(sel_id):
+					source_wall_id = sel_id
+			
+			# Method 2: Check last valid selection
+			if source_wall_id < 0 and store_last_valid_selection.size() > 0:
+				var last = store_last_valid_selection[0]
+				if is_instance_valid(last) and last.has_meta("node_id"):
+					var last_id = last.get_meta("node_id")
+					if last_id != new_id and customdatamanager.has_data(last_id):
+						source_wall_id = last_id
+			
+			# Method 3: Find wall whose point count decreased (WallTool splits)
+			if source_wall_id < 0:
+				source_wall_id = _find_split_source_wall(new_id)
+
+			colourthings.propagate_wall_data_to_new_wall(node, source_wall_id)
+		return
+
+	if Global.Editor.ActiveToolName == "WallTool":
+		return
 
 	if Global.Editor.ActiveToolName in BUILD_THESE_TOOLS:
 		# Exclude the pattern shape tool as it behaves oddly before the shape is complete.
-		#if get_node_type(node) != "pattern_shapes":
 		if Global.Editor.ActiveToolName != "PatternShapeTool":
 			# Note we only need to call one new node function
 			colourthings.set_tint_colour_on_new_node(node)
@@ -1223,6 +1275,8 @@ func preview_changed(tool_type: String):
 
 	# if this is an object type
 	if is_object_tool_type(tool_type):
+		# Signal to colourthings that the preview asset has changed (for Color Variants)
+		colourthings._preview_asset_changed = true
 		# Refresh the preview colour
 		colourthings.set_preview_colour(tool_type, true)
 
@@ -1230,6 +1284,16 @@ func preview_changed(tool_type: String):
 func selection_changed():
 
 	outputlog("selection_changed",2)
+
+	# Check if any selected node is invalid or has selectable type 0 (partially constructed / wall joints)
+	var selected = Global.Editor.Tools["SelectTool"].Selected
+	if selected.size() > 0:
+		for node in selected:
+			if not is_instance_valid(node):
+				return
+		var selectable_type = Global.Editor.Tools["SelectTool"].GetSelectableType(selected[0])
+		if selectable_type == 0:
+			return
 
 	if colourthings != null: colourthings.set_colour_palette_to_selection()
 	if edgeblurpatterns != null: edgeblurpatterns.set_edgeblur_ui_to_selection()
@@ -1252,6 +1316,12 @@ func on_unhandled_mouse_event(event):
 
 	outputlog("on_unhandled_mouse_event",4)
 
+	# Detect Shift+mouse wheel in ScatterTool (asset cycle via Next(cycle=true))
+	if Global.Editor.ActiveToolName == "ScatterTool":
+		if event is InputEventMouseButton and event.pressed and event.shift:
+			if event.button_index == BUTTON_WHEEL_UP or event.button_index == BUTTON_WHEEL_DOWN:
+				colourthings._scatter_wheel_cycled = true
+
 	# Check the tool type
 	match Global.Editor.ActiveToolName:
 		"SelectTool":
@@ -1261,7 +1331,7 @@ func on_unhandled_mouse_event(event):
 				outputlog("mouse_event - portal options",4)
 				# If we have just released a drag action then refresh the wall colours as this may have been a portal move action
 				if Input.is_action_just_released("left_mouse_click",true):
-					refresh_colours_on_walls(Global.World.GetCurrentLevel(), 0.1)
+					colourthings.refresh_colours_on_walls(Global.World.GetCurrentLevel(), 0.02)
 			
 		"PathTool":
 			# If we are drawing
@@ -1284,6 +1354,19 @@ func on_unhandled_key_event(event):
 			# Capture a copy event from the key presses
 			if Input.is_action_just_pressed("copy_keys_pressed"):
 				customdatamanager.store_copy_data()
+			# Detect delete key to refresh walls after portal/wall deletion
+			if event is InputEventKey and event.pressed and event.scancode == KEY_DELETE:
+				# Before DD deletes: capture tint data from selected walls so we can
+				# propagate it to any new walls that DD creates from the deletion
+				colourthings.capture_wall_tint_before_delete()
+				colourthings.refresh_colours_on_walls(Global.World.GetCurrentLevel(), 0.02)
+				# After DD has processed the delete: propagate tint to orphaned new walls
+				colourthings.propagate_tint_to_orphaned_walls(0.08)
+
+	# Detect undo/redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z) to refresh walls
+	if event is InputEventKey and event.pressed and event.control:
+		if event.scancode == KEY_Z or event.scancode == KEY_Y:
+			colourthings.refresh_colours_on_walls(Global.World.GetCurrentLevel(), 0.02)
 
 # Function to set up the 
 func set_up_input_capture():
@@ -1324,16 +1407,71 @@ class UnhandledEventEmitter extends Node:
 #########################################################################################################
 
 # Check something every frame
+func _get_wall_point_count(wall: Node2D) -> int:
+	for i in range(wall.get_child_count()):
+		var child = wall.get_child(i)
+		if child is Line2D and child.get_point_count() >= 2:
+			return child.get_point_count()
+	return 0
+
+func _update_wall_snapshot():
+	var level = Global.World.GetCurrentLevel()
+	if level == null:
+		return
+	var walls_node = level.get_node_or_null("Walls")
+	if walls_node == null:
+		return
+	var new_snapshot = {}
+	for i in range(walls_node.get_child_count()):
+		var child = walls_node.get_child(i)
+		if is_instance_valid(child) and child.get("Joint") != null and child.has_meta("node_id"):
+			new_snapshot[child.get_meta("node_id")] = _get_wall_point_count(child)
+	_wall_point_snapshot = new_snapshot
+
+func _find_split_source_wall(new_wall_id: int) -> int:
+	# The source wall is the one whose point count decreased since last snapshot
+	# AND that has tint data in CustomDataManager
+	var level = Global.World.GetCurrentLevel()
+	if level == null:
+		return -1
+	var walls_node = level.get_node_or_null("Walls")
+	if walls_node == null:
+		return -1
+	
+	for i in range(walls_node.get_child_count()):
+		var child = walls_node.get_child(i)
+		if not is_instance_valid(child) or child.get("Joint") == null or not child.has_meta("node_id"):
+			continue
+		var cid = child.get_meta("node_id")
+		if cid == new_wall_id:
+			continue
+		# Check if this wall's point count decreased
+		if _wall_point_snapshot.has(cid):
+			var old_count = _wall_point_snapshot[cid]
+			var new_count = _get_wall_point_count(child)
+			if new_count < old_count and customdatamanager.has_data(cid):
+				return cid
+	return -1
+
 func update(_delta):
 
 	# Watch for a preview node change in one of the object tools and update the preview if it has. Noting this is needed as the added node signal fires before (or in parallel to when) the preview node has been updated.
 	if is_object_tool_type(Global.Editor.ActiveToolName):
+		var tool_ref = Global.Editor.Tools[Global.Editor.ActiveToolName]
 		# If the stored value is not the current object value
-		if store_preview_node != Global.Editor.Tools[Global.Editor.ActiveToolName].Preview:
+		if store_preview_node != tool_ref.Preview:
 			# Call preview changed function
 			preview_changed(Global.Editor.ActiveToolName)
 			# Update the stored preview
-			store_preview_node = Global.Editor.Tools[Global.Editor.ActiveToolName].Preview
+			store_preview_node = tool_ref.Preview
+
+	# Detect Shift+mouse wheel in ScatterTool to regenerate Color Variants on each cycle
+	# ScatterTool.Next(cycle=true) reuses the same Preview Prop with potentially the same texture,
+	# so we detect the input directly rather than waiting for a node/texture change
+	if Global.Editor.ActiveToolName == "ScatterTool" and colourthings._scatter_wheel_cycled:
+		colourthings._scatter_wheel_cycled = false
+		colourthings._preview_asset_changed = true
+		colourthings.set_preview_colour("ScatterTool", true)
 
 	# A new node has been added since we last checked
 	if Global.Editor.ActiveToolName == "SelectTool":
@@ -1345,7 +1483,10 @@ func update(_delta):
 		outputlog("save finished",2)
 		_begun_save = false
 		if colourterrain:
-			colourterrain.save_terrain_data()		
+			colourterrain.save_terrain_data()
+	
+	# Update wall point count snapshot for split detection
+	_update_wall_snapshot()
 
 #########################################################################################################
 ##
@@ -1490,6 +1631,8 @@ func start() -> void:
 
 	# Find all the custom colour palettes so that we can refresh them so the Object Library shows the custom colours not the tint colours
 	find_all_custom_color_palettes()
+	# Set up unified colour picker in the select panel (merge tint + custom color into one area)
+	colourthings.setup_unified_select_picker()
 	find_official_gridmenus()
 
 	register_left_mouse_click_action()

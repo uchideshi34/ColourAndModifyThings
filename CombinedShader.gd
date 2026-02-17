@@ -4,16 +4,17 @@ class_name CombinedShader
 var customdatamanager = null
 
 var universalshader = null
+var colorable_hsl_shader = null  # Hybrid shader: DD CustomColors + HSL adjustments
 
 var reference_to_script = null
 
 const DEFAULT_HISTORY_RECORD = {"has_data": false, "previous_node_data": {}, "new_node_data": {}}
-var history_record = DEFAULT_HISTORY_RECORD
+var history_record = {"has_data": false, "previous_node_data": {}, "new_node_data": {}}
 
 const TYPE_LOOKUP = {"ObjectTool": "objects","ScatterTool": "objects", "PathTool": "paths", "PatternShapeTool": "pattern_shapes", "WallTool": "walls", "PortalTool": "portals"}
 
 # Logging Functions
-const ENABLE_LOGGING = true
+const ENABLE_LOGGING = false
 var logging_level = 0
 
 #########################################################################################################
@@ -61,6 +62,156 @@ func is_the_same(a, b) -> bool:
 func _init():
 
 	pass
+
+# Build a hybrid shader that combines DD's CustomColors.shader with HSL adjustments.
+# This preserves DD's exact colorable rendering while adding our HSL controls on top.
+func build_colorable_hsl_shader():
+
+	outputlog("build_colorable_hsl_shader", 0)
+
+	# Load the DD CustomColors shader and read its source code
+	var dd_shader = ResourceLoader.load("res://shaders/CustomColors.shader", "Shader", true)
+	if dd_shader == null:
+		outputlog("ERROR: Could not load CustomColors.shader", 0)
+		return
+
+	var dd_code = dd_shader.code
+	if dd_code == null or dd_code == "":
+		outputlog("ERROR: CustomColors.shader has no code", 0)
+		return
+
+	outputlog("DD CustomColors shader code length: " + str(dd_code.length()), 0)
+
+	# Define the HSL uniforms we need to inject
+	var hsl_uniforms = """
+// --- ColourThings HSL uniforms ---
+uniform float saturation = 1.0;
+uniform float hue_shift = 0.0;
+uniform float lightness = 0.0;
+uniform float contrast = 0.0;
+uniform bool invert = false;
+uniform bool apply_hsl = false;
+uniform float sat_blacks = 0.0;
+uniform float sat_midtones = 1.0;
+uniform float sat_whites = 1.0;
+uniform float sat_out_blacks = 0.0;
+uniform float sat_out_whites = 1.0;
+uniform bool protect_hue = true;
+uniform bool protect_sat = true;
+uniform bool protect_light = true;
+"""
+
+	# Define the HSL processing functions
+	var hsl_functions = """
+// --- ColourThings HSL functions ---
+vec3 ct_rgb2hsv(vec3 c) {
+	vec4 K = vec4(0.0, -1.0 / 3.0, 2.0 / 3.0, -1.0);
+	vec4 p = mix(vec4(c.bg, K.wz), vec4(c.gb, K.xy), step(c.b, c.g));
+	vec4 q = mix(vec4(p.xyw, c.r), vec4(c.r, p.yzx), step(p.x, c.r));
+	float d = q.x - min(q.w, q.y);
+	float e = 1.0e-10;
+	return vec3(abs(q.z + (q.w - q.y) / (6.0 * d + e)), d / (q.x + e), q.x);
+}
+
+vec3 ct_hsv2rgb(vec3 c) {
+	vec4 K = vec4(1.0, 2.0 / 3.0, 1.0 / 3.0, 3.0);
+	vec3 p = abs(fract(c.xxx + K.xyz) * 6.0 - K.www);
+	return c.z * mix(K.xxx, clamp(p - K.xxx, 0.0, 1.0), c.y);
+}
+"""
+
+	# Define the HSL post-processing code to inject before the final COLOR assignment
+	var hsl_postprocess = """
+	// --- ColourThings HSL post-processing ---
+	if (apply_hsl) {
+		vec3 hsl_color = COLOR.rgb;
+		float hsl_alpha = COLOR.a;
+
+		// Re-read original texture to detect colorable pixels using DD's exact logic
+		vec4 ct_orig = texture(TEXTURE, UV);
+		bool ct_is_red = abs(ct_orig.g - ct_orig.b) <= red_tolerance;
+		bool ct_is_within_sat = 1.0 - ((ct_orig.g + ct_orig.b) * 0.5) >= min_saturation;
+		float ct_redness = ct_orig.r - (ct_orig.g + ct_orig.b) * 0.5;
+		bool ct_is_colorable = ct_is_red && ct_is_within_sat && ct_redness > min_redness;
+
+		// Apply saturation adjustment - skip colorable pixels if protected
+		if (!(ct_is_colorable && protect_sat) && abs(saturation - 1.0) > 0.001) {
+			float gray = dot(hsl_color, vec3(0.299, 0.587, 0.114));
+			hsl_color = mix(vec3(gray), hsl_color, saturation);
+		}
+
+		// Apply hue shift - skip colorable pixels if protected
+		if (!(ct_is_colorable && protect_hue) && abs(hue_shift) > 0.001) {
+			vec3 hsv = ct_rgb2hsv(hsl_color);
+			hsv.x = fract(hsv.x + hue_shift * 0.5);
+			hsl_color = ct_hsv2rgb(hsv);
+		}
+
+		// Apply lightness - skip colorable pixels if protected
+		if (!(ct_is_colorable && protect_light) && abs(lightness) > 0.001) {
+			if (lightness > 0.0) {
+				hsl_color = mix(hsl_color, vec3(1.0), lightness);
+			} else {
+				hsl_color = mix(hsl_color, vec3(0.0), -lightness);
+			}
+		}
+
+		// Apply contrast
+		if (abs(contrast) > 0.001) {
+			if (contrast > 0.0) {
+				float contrast_factor = 1.0 + contrast * 2.0;
+				hsl_color = clamp((hsl_color - vec3(0.5)) * contrast_factor + vec3(0.5), 0.0, 1.0);
+			} else {
+				hsl_color = mix(hsl_color, vec3(0.5), -contrast);
+			}
+		}
+
+		// Apply Input Levels
+		float ct_range = max(sat_whites - sat_blacks, 0.001);
+		hsl_color = clamp((hsl_color - vec3(sat_blacks)) / ct_range, 0.0, 1.0);
+
+		// Apply gamma
+		hsl_color = pow(hsl_color, vec3(1.0 / sat_midtones));
+
+		// Apply Output Levels
+		hsl_color = mix(vec3(sat_out_blacks), vec3(sat_out_whites), hsl_color);
+
+		// Apply invert
+		if (invert) {
+			hsl_color = vec3(1.0) - hsl_color;
+		}
+
+		COLOR = vec4(hsl_color, hsl_alpha);
+	}
+"""
+
+	# Now inject our code into the DD shader code
+	var new_code = dd_code
+
+	# Step 1: Inject uniforms after the first uniform block or after shader_type
+	# Find the position after "shader_type canvas_item;" line
+	var shader_type_end = new_code.find(";")
+	if shader_type_end >= 0:
+		new_code = new_code.insert(shader_type_end + 1, "\n" + hsl_uniforms)
+
+	# Step 2: Inject HSL functions before void fragment()
+	var fragment_pos = new_code.find("void fragment()")
+	if fragment_pos < 0:
+		fragment_pos = new_code.find("void fragment ()")
+	if fragment_pos >= 0:
+		new_code = new_code.insert(fragment_pos, hsl_functions + "\n")
+
+	# Step 3: Inject HSL post-processing before the closing brace of fragment()
+	# Find the last closing brace which should be the end of fragment()
+	var last_brace = new_code.rfind("}")
+	if last_brace >= 0:
+		new_code = new_code.insert(last_brace, "\n" + hsl_postprocess + "\n")
+
+	# Create the hybrid shader
+	colorable_hsl_shader = Shader.new()
+	colorable_hsl_shader.code = new_code
+
+	outputlog("build_colorable_hsl_shader: complete, code length: " + str(new_code.length()), 0)
 
 # Function to get the texture of a node based on tool_type
 func get_asset_texture(node, tool_type: String):
@@ -130,6 +281,49 @@ func set_custom_attributes_on_node(node: Node2D, new_config: Dictionary):
 
 	outputlog("set_custom_attributes_on_node: " + str(new_config),2)
 
+	# For patterns: save and restore the original DD color
+	if new_config.has("type") and new_config["type"] == "pattern_shapes":
+		var current_texture_path = ""
+		if node._Texture != null:
+			current_texture_path = node._Texture.resource_path
+		
+		# Check if the texture has changed since we saved the original color
+		if node.has_meta("original_dd_texture"):
+			var saved_texture_path = node.get_meta("original_dd_texture")
+			if saved_texture_path != current_texture_path:
+				# Texture changed, remove old original_dd_color
+				node.remove_meta("original_dd_color")
+				node.remove_meta("original_dd_texture")
+		
+		# Restore original_dd_color: prefer saved config data, then node meta, then current node color
+		if not node.has_meta("original_dd_color"):
+			# First check if we have it persisted in the config (survives save/load)
+			if new_config.has("original_dd_color") and new_config["original_dd_color"] != "" and new_config["original_dd_color"] != "ffffffff":
+				node.set_meta("original_dd_color", new_config["original_dd_color"])
+				node.set_meta("original_dd_texture", current_texture_path)
+			else:
+				# Read from the node's current state (first time setup)
+				var pattern_save = node.Save(true)
+				if pattern_save.has("color"):
+					var saved_color = pattern_save["color"]
+					# Only save if the color is not white (white means DD already has the mod-modified value)
+					if saved_color != "ffffffff":
+						node.set_meta("original_dd_color", saved_color)
+						node.set_meta("original_dd_texture", current_texture_path)
+		
+		# Always persist original_dd_color into the config so it survives save/load
+		if node.has_meta("original_dd_color"):
+			new_config["original_dd_color"] = node.get_meta("original_dd_color")
+
+	# For walls: save the original DD color using node meta
+	if new_config.has("type") and new_config["type"] == "walls":
+		if not node.has_meta("original_dd_color"):
+			var wall_color = node.Color
+			if wall_color != null:
+				node.set_meta("original_dd_color", wall_color.to_html())
+		else:
+			pass
+
 	# Make new shader
 	var shader_material = ShaderMaterial.new()
 	var apply_shader = false
@@ -151,7 +345,8 @@ func set_custom_attributes_on_node(node: Node2D, new_config: Dictionary):
 		shader_material = update_shader_material_with_colour_config(node, shader_material, config)
 		apply_shader = true
 		# Add business logic that removes custom coloured objects that are non-gradient values, noting we have already updated the shader material
-		if config["type"] == "objects" && config["shader_type"] != "gradient":
+		# But now we allow saturation mode for colorable objects too
+		if config["type"] == "objects" && config["shader_type"] != "gradient" && config["shader_type"] != "saturation":
 			if node.HasCustomColor():
 				apply_shader = false
 	else:
@@ -177,6 +372,53 @@ func set_custom_attributes_on_node(node: Node2D, new_config: Dictionary):
 		apply_shader = true
 
 	# Set the shader and material correctly
+	# For colorable objects in saturation mode: use the hybrid DD+HSL shader
+	# This preserves DD's exact colorable rendering while adding HSL on top
+	var use_colorable_hsl = false
+	if config["type"] == "objects" and config["shader_type"] == "saturation" and node.HasCustomColor() and colorable_hsl_shader != null:
+		use_colorable_hsl = true
+		# Create a new shader material based on the hybrid shader
+		var colorable_material = ShaderMaterial.new()
+		colorable_material.shader = colorable_hsl_shader
+		# Set the DD custom color param
+		var custom_color = null
+		if config.has("colorable_custom_color") and config["colorable_custom_color"] != null:
+			custom_color = Color(config["colorable_custom_color"])
+		else:
+			custom_color = node.GetCustomColor()
+		if custom_color != null:
+			colorable_material.set_shader_param("tint_r", custom_color)
+		# Set the HSL params
+		colorable_material.set_shader_param("apply_hsl", true)
+		if config.has("saturation"):
+			colorable_material.set_shader_param("saturation", config["saturation"])
+		if config.has("hue_shift"):
+			colorable_material.set_shader_param("hue_shift", config["hue_shift"])
+		if config.has("lightness"):
+			colorable_material.set_shader_param("lightness", config["lightness"])
+		if config.has("contrast"):
+			colorable_material.set_shader_param("contrast", config["contrast"])
+		if config.has("invert"):
+			colorable_material.set_shader_param("invert", config["invert"])
+		if config.has("sat_levels"):
+			colorable_material.set_shader_param("sat_blacks", config["sat_levels"]["blacks"])
+			colorable_material.set_shader_param("sat_midtones", config["sat_levels"]["midtones"])
+			colorable_material.set_shader_param("sat_whites", config["sat_levels"]["whites"])
+		if config.has("sat_output_levels"):
+			colorable_material.set_shader_param("sat_out_blacks", config["sat_output_levels"]["out_blacks"])
+			colorable_material.set_shader_param("sat_out_whites", config["sat_output_levels"]["out_whites"])
+		# Set colorable protection params (default to true = protected)
+		if config.has("colorable_protect"):
+			colorable_material.set_shader_param("protect_hue", config["colorable_protect"]["hue"])
+			colorable_material.set_shader_param("protect_sat", config["colorable_protect"]["saturation"])
+			colorable_material.set_shader_param("protect_light", config["colorable_protect"]["lightness"])
+		# Apply directly to node's Sprite
+		node.Sprite.material = colorable_material
+		# Apply modulate values (no shader pass-through needed)
+		set_custom_modulate(node, config, false)
+		outputlog("set_custom_attributes_on_node: applied colorable HSL hybrid shader", 2)
+		return
+
 	shader_material.shader = universalshader
 
 	# Apply modulate values
@@ -297,31 +539,76 @@ func set_custom_modulate(node: Node2D, config: Dictionary, apply_shader: bool):
 	if not config.has("type"):
 		return
 	
+	# Get opacity from config (default to colour alpha, then 1.0)
+	var opacity = 1.0
+	if config.has("opacity"):
+		opacity = config["opacity"]
+	elif config.has("colour"):
+		opacity = Color(config["colour"]).a
+	
 	# Set the tint colour if we are using the tint colour
 	match config["type"]:
 		"objects", "paths", "portals":
-			node.set_modulate(Color(config["colour"]))
-			if config["type"] == "objects":
-				if node.HasCustomColor():
-					outputlog("custom colour: " + str(node.GetCustomColor().to_html()),2)
+			# For colorable objects, don't apply tint colour via modulate - DD's shader handles the custom color
+			# But always apply opacity via the alpha channel
+			if config["type"] == "objects" and node.HasCustomColor():
+				node.set_modulate(Color(1, 1, 1, opacity))
+			else:
+				var mod_color = Color(config["colour"])
+				mod_color.a = opacity
+				node.set_modulate(mod_color)
 		"pattern_shapes":
+			var node_id = node.get_meta("node_id")
+			
+			# Determine which color to use:
+			# - If user changed the DD color (not white), use that
+			# - Otherwise use the original_dd_color
+			var base_color = Color(config["colour"])
+			var use_original = false
+			
+			# If the config color is white or nearly white, use original instead
+			if base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99:
+				if node.has_meta("original_dd_color"):
+					base_color = Color(node.get_meta("original_dd_color"))
+					use_original = true
+			
+			
 			# If we are using the universal shader then we use the modulate value to change the pattern
 			if apply_shader:
 				# If this is a tile type, strange things are happening with DD resetting the default color values so just set the colour to white and accept that tileset can't have gradients and colours
 				if is_tile_pattern(node):
-					node.set_modulate(Color.white)
+					var mod_color = Color.white
+					mod_color.a = opacity
+					node.set_modulate(mod_color)
 					node.SetOptions(node._Texture, Color.white, node._Rotation)
 				else:
-					# Set the options here to force the custom colour to update in DD. Noting we take over the shader after this
-					node.SetOptions(node._Texture, Color(config["colour"]), node._Rotation)
-					node.set_modulate(Color(config["colour"]))
-			# If we are relying on the default DD pattern shader then it takes the colour value into that shader so we want the modulate as white 
+					# Use base_color with opacity
+					var pattern_color = base_color
+					pattern_color.a = opacity
+					node.SetOptions(node._Texture, pattern_color, node._Rotation)
+					node.set_modulate(pattern_color)
+			# If we are relying on the default DD pattern shader then it takes the colour value into that shader so we want the modulate as white but preserve opacity
 			else:
-				node.set_modulate(Color.white)
+				var mod_color = Color.white
+				mod_color.a = opacity
+				node.set_modulate(mod_color)
 				# DD should take care of this but the timing may not work, so force it
-				node.SetOptions(node._Texture, Color(config["colour"]), node._Rotation)
+				var pattern_color = base_color
+				pattern_color.a = opacity
+				node.SetOptions(node._Texture, pattern_color, node._Rotation)
 		"walls":
-			node.SetColor(Color(config["colour"]))
+			# Determine which color to use for walls
+			var wall_base_color = Color(config["colour"])
+			
+			# If the config color is white or nearly white, use original instead
+			if wall_base_color.r > 0.99 and wall_base_color.g > 0.99 and wall_base_color.b > 0.99:
+				if node.has_meta("original_dd_color"):
+					wall_base_color = Color(node.get_meta("original_dd_color"))
+			
+			# Apply opacity
+			wall_base_color.a = opacity
+			node.SetColor(wall_base_color)
+			node.set_modulate(Color(1, 1, 1, opacity))
 
 # Is this is a tile pattern
 func is_tile_pattern(node: Node2D) -> bool:
@@ -338,6 +625,47 @@ func is_tile_pattern(node: Node2D) -> bool:
 
 	if "/tilesets/" in texture_path:
 		return true
+	return false
+
+# Is this a colorable pattern (patterns in /textures/patterns/colorable/ or tilesets with custom_color type)
+func is_colorable_pattern(node: Node2D) -> bool:
+
+	outputlog("is_colorable_pattern: " + str(node),2)
+
+	if get_node_type(node) != "pattern_shapes": return false
+
+	var texture = get_asset_texture(node, "pattern_shapes")
+	if texture == null: return false
+
+	var texture_path = texture.resource_path
+
+	# Check if in colorable patterns folder
+	if "/colorable/" in texture_path:
+		return true
+	
+	# Check if the pattern has a method or property indicating it's colorable
+	# Try to check if node has HasCustomColor like objects do
+	if node.has_method("HasCustomColor"):
+		var has_custom = node.HasCustomColor()
+		if has_custom:
+			return true
+	
+	# Check the Save() data for type info
+	var pattern_save = node.Save(true)
+	if pattern_save.has("type"):
+		pass
+	
+	# Check for known colorable tilesets by path
+	var colorable_tilesets = [
+		"tileset_wood_damaged.png",
+		"tileset_ornate.png",
+		"tileset_diamond_2.png",
+		"tileset_diamond.png"
+	]
+	for tileset in colorable_tilesets:
+		if tileset in texture_path:
+			return true
+	
 	return false
 
 #########################################################################################################
@@ -365,6 +693,16 @@ func update_shader_material_with_colour_config(node, shader_material: ShaderMate
 			shader_material.set_shader_param("min_redness", colour_config["red_config"]["min_redness"])
 			shader_material.set_shader_param("red_tolerance", colour_config["red_config"]["red_tolerance"])	
 			shader_material.set_shader_param("min_saturation", colour_config["red_config"]["min_saturation"])
+			# Pass the custom color as base_color for colorable objects
+			# Prefer the color from UI (colorable_custom_color) for real-time preview
+			var custom_color = null
+			if colour_config.has("colorable_custom_color") and colour_config["colorable_custom_color"] != null:
+				custom_color = Color(colour_config["colorable_custom_color"])
+			else:
+				custom_color = node.GetCustomColor()
+			if custom_color != null:
+				shader_material.set_shader_param("base_color", custom_color)
+				shader_material.set_shader_param("apply_base_color", true)
 	
 	# Look at the colour config type
 	match colour_config["shader_type"]:
@@ -411,6 +749,28 @@ func update_shader_material_with_colour_config(node, shader_material: ShaderMate
 				outputlog("sat_output_levels applied: " + str(colour_config["sat_output_levels"]),2)
 				shader_material.set_shader_param("sat_out_blacks", colour_config["sat_output_levels"]["out_blacks"])
 				shader_material.set_shader_param("sat_out_whites", colour_config["sat_output_levels"]["out_whites"])
+			# For patterns, pass the base color to shader
+			if colour_config["type"] == "pattern_shapes":
+				var base_color = Color(colour_config["colour"])
+				# If config color is white, use original_dd_color instead
+				if base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99:
+					if node.has_meta("original_dd_color"):
+						base_color = Color(node.get_meta("original_dd_color"))
+				# Only apply base_color if it's not white
+				if not (base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99):
+					shader_material.set_shader_param("base_color", base_color)
+					shader_material.set_shader_param("apply_base_color", true)
+			# For walls, pass the base color to shader
+			if colour_config["type"] == "walls":
+				var base_color = Color(colour_config["colour"])
+				# If config color is white, use original_dd_color instead
+				if base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99:
+					if node.has_meta("original_dd_color"):
+						base_color = Color(node.get_meta("original_dd_color"))
+				# Only apply base_color if it's not white
+				if not (base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99):
+					shader_material.set_shader_param("base_color", base_color)
+					shader_material.set_shader_param("apply_base_color", true)
 	
 	# If this is a pattern then set the pattern specific values
 	if colour_config["type"] == "pattern_shapes":
@@ -419,6 +779,18 @@ func update_shader_material_with_colour_config(node, shader_material: ShaderMate
 			shader_material.set_shader_param("is_pattern", true)
 			shader_material.set_shader_param("texture_rotation", node._Rotation)
 			shader_material.set_shader_param("pattern_tex", texture)
+			# Check if this is a colorable pattern
+			if is_colorable_pattern(node):
+				shader_material.set_shader_param("is_colourable", true)
+				# Use default red config values for colorable patterns
+				shader_material.set_shader_param("min_redness", 0.1)
+				shader_material.set_shader_param("red_tolerance", 0.04)
+				shader_material.set_shader_param("min_saturation", 0.0)
+				# Pass colorable protection checkbox values (same logic as objects)
+				if colour_config.has("colorable_protect"):
+					shader_material.set_shader_param("protect_hue", colour_config["colorable_protect"]["hue"])
+					shader_material.set_shader_param("protect_sat", colour_config["colorable_protect"]["saturation"])
+					shader_material.set_shader_param("protect_light", colour_config["colorable_protect"]["lightness"])
 		else:
 			# Define some error state
 			return null
@@ -588,17 +960,55 @@ func reset_node_material(node):
 		match get_node_type(node):
 			"paths","portals":
 				node.material = null
+			"walls":
+				# Reset shader on all wall lines and their sprite children
+				for line in node.lines:
+					line.material = null
+					for wall_end in line.get_children():
+						if wall_end is Sprite:
+							wall_end.material = null
 			"pattern_shapes":
 				node.material = ResourceLoader.load("res://materials/Pattern.material","ShaderMaterial",true)
-				var pattern_save = node.Save(true)
+				# Try to restore original_color from stored data
+				var restore_color = Color.white
+				var node_id = node.get_meta("node_id")
+				# First try node meta (most reliable)
+				if node.has_meta("original_dd_color"):
+					restore_color = Color(node.get_meta("original_dd_color"))
+					outputlog("Restored from node meta: " + str(restore_color), 2)
+					# Remove the meta so next time we capture fresh color
+					node.remove_meta("original_dd_color")
+					if node.has_meta("original_dd_texture"):
+						node.remove_meta("original_dd_texture")
+				# Then try customdatamanager
+				elif customdatamanager.has_data(node_id):
+					var stored = customdatamanager.get_data(node_id)
+					if stored.has("original_color") and stored["original_color"] != null:
+						restore_color = Color(stored["original_color"])
+					else:
+						var pattern_save = node.Save(true)
+						if pattern_save.has("color"):
+							restore_color = Color(pattern_save["color"])
+				else:
+					var pattern_save = node.Save(true)
+					if pattern_save.has("color"):
+						restore_color = Color(pattern_save["color"])
 				node.set_modulate(Color.white)
-				node.SetOptions(node._Texture, Color(pattern_save['color']), node._Rotation)
+				node.SetOptions(node._Texture, restore_color, node._Rotation)
 			"objects":
 				if node.HasCustomColor():
 					reset_colourable_object_node(node)
 				else:
 					node.Sprite.material = null
 			"walls":
+				# Restore original color if available
+				var restore_color = Color.white
+				if node.has_meta("original_dd_color"):
+					restore_color = Color(node.get_meta("original_dd_color"))
+					# Remove the meta so next time we capture fresh color
+					node.remove_meta("original_dd_color")
+				node.SetColor(restore_color)
+				node.set_modulate(Color.white)
 				# Null each line2d in the lines array
 				for line in node.lines:
 					line.material = ResourceLoader.load("res://materials/Wall.material","ShaderMaterial",true)
@@ -631,13 +1041,14 @@ func is_node_using_universal_shader(node) -> bool:
 			"objects":
 				current_shader = node.Sprite.material.shader
 			"walls":
-				# Null each line2d in the lines array
+				# Check the first line2d in the lines array
 				for line in node.lines:
-					current_shader = line.material.shader
+					if line.material != null:
+						current_shader = line.material.shader
 					break
 
-	# Check if the current shader if the universal shader
-	if current_shader == universalshader:
+	# Check if the current shader is the universal shader or the colorable HSL hybrid shader
+	if current_shader == universalshader or current_shader == colorable_hsl_shader:
 		outputlog("is_node_using_universal_shader: " +str(true),2)
 		return true
 	else:
@@ -713,6 +1124,11 @@ func add_update_history_data(node_id: int, tool_type: String, config: Dictionary
 	var node_id_string = "node-id-" + str(node_id)
 	# If there is no existing record for that node, then create a record, ie do not update if there is an existing record
 	if not history_record["previous_node_data"].has(node_id_string):
+		# Also capture the current DD custom color from the node for undo/redo
+		if data["type"] == "objects":
+			var node = customdatamanager.global.World.GetNodeByID(node_id)
+			if node != null and node.has_method("HasCustomColor") and node.HasCustomColor():
+				data["colorable_custom_color"] = node.GetCustomColor().to_html()
 		history_record["previous_node_data"][node_id_string] = data.duplicate(true)
 
 	config = customdatamanager.merge_dict(data,config)
@@ -723,7 +1139,13 @@ func add_update_history_data(node_id: int, tool_type: String, config: Dictionary
 # Function to reset the history data back to default values
 func clear_history_data():
 
-	history_record = DEFAULT_HISTORY_RECORD
+	history_record = DEFAULT_HISTORY_RECORD.duplicate(true)
+
+# Finalize any pending history record if one exists. 
+# Call this before starting a new type of change to ensure each change is a separate undo point.
+func finalize_pending_history():
+	if history_record["has_data"]:
+		create_update_custom_history(0.0)
 
 # Create custom history record, called when a colour preset is selected, the color picker is closed, or a slider timer finishes
 func create_update_custom_history(delay_secs: float = 0.0):

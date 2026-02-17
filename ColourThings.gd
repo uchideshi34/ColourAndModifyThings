@@ -29,12 +29,29 @@ var ui_config = {}
 var GradientMap
 var NewHSlider
 
+# Clipboard for copy/paste colour settings between selected assets
+var clipboard_data = null
+var clipboard_type = ""
+
+# Stored random offsets for preview (regenerated after each placement)
+var _preview_variant_offsets = {}
+# Flag set by Core.gd when the preview asset changes (scroll wheel cycle)
+var _preview_asset_changed = false
+# Flag set by Core.gd when Shift+wheel is detected in ScatterTool
+var _scatter_wheel_cycled = false
+
+# Tracks the current type of change being made, for history granularity
+var _current_change_source = ""
+
+# Keys to copy/paste (colour/shader only, no edge blur or path modifiers)
+const CLIPBOARD_KEYS = ["shader_type", "colour", "opacity", "saturation", "hue_shift", "lightness", "contrast", "invert", "gradient", "sat_levels", "sat_output_levels", "levels", "levels_default_brightness", "red_config", "colorable_custom_color", "original_dd_color", "texture", "colorable_protect"]
+
 const BUILD_THESE_TOOLS = ["ObjectTool", "ScatterTool", "PathTool", "PatternShapeTool","WallTool","PortalTool"]
 
 const DEFAULT_COLOUR_PRESETS = ["ff6b3834", "ffac584c", "ff885848", "ffc0866c", "ff8d6d58", "fff3a768", "ff685848", "ff9c8868", "ffae9254", "ffd8c888", "ff888868", "ffaab478", "ff92aa58", "ff87a868", "ff679865", "ff789868", "ff546d56", "ff68887c", "ff667878", "ff809dab", "ff61788d", "ff535869", "ff786878", "ff886878", "ff905868", "ff994858", "ffffffff", "bfffffff", "7fffffff", "40ffffff"]
 const TYPE_LOOKUP = {"ObjectTool": "objects","ScatterTool": "objects", "PathTool": "paths", "PatternShapeTool": "pattern_shapes", "WallTool": "walls", "PortalTool": "portals"}
 const TOOL_TYPE_LOOKUP_BY_SELECTABLE = {"1": "WallTool", "2": "PortalTool", "3": "PortalTool", "4": "ObjectTool", "5": "PathTool", "6": "LightTool", "7": "PatternShapeTool", "8": "RoofTool"}
-const HIDE_NONGRADIENT_BUTTON_TOOLS = ["PatternShapeTool","WallTool"]
+const HIDE_NONGRADIENT_BUTTON_TOOLS = []
 const NON_CUSTOM_PALETTE_TOOLS = ["PatternShapeTool","WallTool"]
 
 const LEVELS_SLIDER_STEP = 0.005
@@ -154,6 +171,9 @@ func is_the_same(a, b) -> bool:
 # Function to look at a node and determine what type it is based on its properties
 func get_node_type(node):
 
+	if node == null or not is_instance_valid(node):
+		return null
+
 	if node.get("WallID") != null:
 		return "portals"
 
@@ -242,6 +262,14 @@ func show_hide_non_gradient_buttons(tool_type: String, location: String, show: b
 	var ui_element = get_ui_element(tool_type,location)
 	if ui_element == null:
 		return
+	
+	# Check if selection is colorable (objects or patterns)
+	var is_colorable_selection = false
+	if location == "select":
+		is_colorable_selection = is_selection_colorable(tool_type)
+	elif location == "main":
+		is_colorable_selection = _is_current_main_object_colorable(tool_type)
+	
 	# Get the list of non-gradient buttons
 	var list_of_buttons = [ui_element["saturate_button"],ui_element["normalise_button"],ui_element["set_white_button"]]
 	# Set those buttons to hidden
@@ -250,6 +278,36 @@ func show_hide_non_gradient_buttons(tool_type: String, location: String, show: b
 		# If the button is pressed and we are hiding it, then we need to set it to not pressed
 		if button.pressed && not show:
 			button.pressed = false
+	
+	# For colorable selections, hide normalise and white buttons but keep their space
+	# and reorder so that saturate + gradient + reset are grouped on the right
+	if show and is_colorable_selection:
+		ui_element["normalise_button"].modulate.a = 0
+		ui_element["normalise_button"].mouse_filter = Control.MOUSE_FILTER_IGNORE
+		ui_element["set_white_button"].modulate.a = 0
+		ui_element["set_white_button"].mouse_filter = Control.MOUSE_FILTER_IGNORE
+		# Reorder: label, (invisible) normalise, (invisible) white, saturate, gradient, reset
+		var hbox = ui_element["tint_hbox"]
+		hbox.move_child(ui_element["normalise_button"], 1)
+		hbox.move_child(ui_element["set_white_button"], 2)
+		hbox.move_child(ui_element["saturate_button"], 3)
+		hbox.move_child(ui_element["gradient_button"], 4)
+		hbox.move_child(ui_element["reset_button"], 5)
+	else:
+		ui_element["normalise_button"].modulate.a = 1
+		ui_element["normalise_button"].mouse_filter = Control.MOUSE_FILTER_STOP
+		ui_element["set_white_button"].modulate.a = 1
+		ui_element["set_white_button"].mouse_filter = Control.MOUSE_FILTER_STOP
+		# Restore original order: label, saturate, normalise, gradient, white, reset
+		var hbox = ui_element["tint_hbox"]
+		hbox.move_child(ui_element["saturate_button"], 1)
+		hbox.move_child(ui_element["normalise_button"], 2)
+		hbox.move_child(ui_element["gradient_button"], 3)
+		hbox.move_child(ui_element["set_white_button"], 4)
+		hbox.move_child(ui_element["reset_button"], 5)
+
+	# Update colorable protection checkboxes visibility
+	update_colorable_protect_visibility(tool_type, location)
 
 # Function to move the gradient location
 func move_gradient_location(tool_type: String, location: String):
@@ -261,7 +319,7 @@ func move_gradient_location(tool_type: String, location: String):
 # Function to register each standard tool and call a function on_tool_launch when they are launched
 func register_tool_launch_or_close_signals():
 
-	var tool_list = ["ObjectTool","ScatterTool","PathTool","PatternShapeTool","SelectTool","WallTool", "PortalTool"]
+	var tool_list = ["ObjectTool","ScatterTool","PathTool","PatternShapeTool","SelectTool", "PortalTool"]
 
 	# For each tool in the list
 	for tool_type in tool_list:
@@ -271,12 +329,41 @@ func register_tool_launch_or_close_signals():
 # Function to register when select options vboxs become visible/hide
 func register_select_options_launch_or_close_signals():
 
-	var tool_list = ["ObjectTool","PathTool","PatternShapeTool","WallTool", "PortalTool"]
+	var tool_list = ["ObjectTool","PathTool","PatternShapeTool","WallTool","PortalTool"]
 
 	# For each tool in the list
 	for tool_type in tool_list:
 		if find_select_vbox(tool_type):
 			find_select_vbox(tool_type).connect("visibility_changed", self, "on_select_tool_option_launch",[tool_type])
+
+# Called when a select tool options vbox becomes visible or hidden
+func on_select_tool_option_launch(tool_type: String):
+
+	outputlog("on_select_tool_option_launch: " + str(tool_type) + " visible: " + str(find_select_vbox(tool_type).visible if find_select_vbox(tool_type) != null else "null"), 0)
+
+	var vbox = find_select_vbox(tool_type)
+	if vbox == null:
+		return
+
+	# Only act when the vbox becomes visible (not when it hides)
+	if not vbox.visible:
+		outputlog("on_select_tool_option_launch: vbox hidden, returning", 0)
+		return
+
+	# If there is a selection, update the UI to reflect the selected node's values
+	if global.Editor.Tools["SelectTool"].Selected.size() > 0:
+		var node = global.Editor.Tools["SelectTool"].Selected[0]
+		outputlog("on_select_tool_option_launch: updating UI for node " + str(node), 0)
+		if is_instance_valid(node):
+			set_colour_ui_to_selected_node_values(node, tool_type)
+	else:
+		outputlog("on_select_tool_option_launch: no selection", 0)
+
+	# Move the gradient map to the correct location
+	if ui_config.has("gradient_map"):
+		if ui_config.has(tool_type) and ui_config[tool_type].has("select"):
+			var gradient_pressed = ui_config[tool_type]["select"]["gradient_button"].pressed if ui_config[tool_type]["select"].has("gradient_button") else false
+			ui_config["gradient_map"].move_location(tool_type, "select", gradient_pressed)
 
 # Function to create and set up the gradient map
 func make_gradient_map_ui():
@@ -413,8 +500,44 @@ func make_overridecolour_ui(tool_type: String, location: String):
 
 	# === SATURATION MODE SLIDERS ===
 	# Order of creation is reversed because move_child places them at the same index
-	# Desired display order: Gamma, Saturation, Hue, Lightness, Contrast, In, Out, Invert Colors
-	# So we create: Invert Colors, Output Levels, Input Levels, Contrast, Lightness, Hue, Saturation, Gamma
+	# Desired display order: Gamma, Saturation, Hue, Lightness, Contrast, In, Out, Invert Colors, [Colorable Protection]
+	# So we create: Colorable Protection, Invert Colors, Output Levels, Input Levels, Contrast, Lightness, Hue, Saturation, Gamma
+	
+	# Make colorable protection checkboxes (only visible when a colorable asset is selected)
+	# Use a VBoxContainer to put the label on one line and checkboxes on the next
+	var colorable_protect_vbox = VBoxContainer.new()
+	vbox.add_child(colorable_protect_vbox)
+	vbox.move_child(colorable_protect_vbox, index)
+	ui_element["colorable_protect_hbox"] = colorable_protect_vbox
+	
+	var protect_label = make_label(colorable_protect_vbox, "Keep Custom Color Settings:", 0)
+	protect_label.hint_tooltip = "When checked, the corresponding slider will NOT affect the colorable (custom color) areas of the asset."
+	
+	var protect_checks_hbox = HBoxContainer.new()
+	colorable_protect_vbox.add_child(protect_checks_hbox)
+	
+	var cb_protect_hue = CheckBox.new()
+	cb_protect_hue.text = "Hue"
+	cb_protect_hue.pressed = true
+	cb_protect_hue.hint_tooltip = "Protect custom color areas from hue shift"
+	protect_checks_hbox.add_child(cb_protect_hue)
+	ui_element["colorable_protect_hue"] = cb_protect_hue
+	
+	var cb_protect_sat = CheckBox.new()
+	cb_protect_sat.text = "Sat"
+	cb_protect_sat.pressed = true
+	cb_protect_sat.hint_tooltip = "Protect custom color areas from saturation changes"
+	protect_checks_hbox.add_child(cb_protect_sat)
+	ui_element["colorable_protect_sat"] = cb_protect_sat
+	
+	var cb_protect_light = CheckBox.new()
+	cb_protect_light.text = "Lightness"
+	cb_protect_light.pressed = true
+	cb_protect_light.hint_tooltip = "Protect custom color areas from lightness changes"
+	protect_checks_hbox.add_child(cb_protect_light)
+	ui_element["colorable_protect_light"] = cb_protect_light
+	
+	colorable_protect_vbox.visible = false
 	
 	# Make invert colors toggle button (icon style like Dungeondraft)
 	ui_element["invert_hbox"] = HBoxContainer.new()
@@ -515,16 +638,16 @@ func make_overridecolour_ui(tool_type: String, location: String):
 	ui_element["sat_midtones_reset_button"] = make_button(ui_element["sat_midtones_slider"].hbox, "icons/rotate-32.png", "Reset gamma to default (1.0)", false, 0.75)
 	ui_element["sat_midtones_reset_button"].connect("pressed", self, "_on_sat_midtones_reset_pressed",[tool_type,location])
 	
+	# Make opacity slider for all tools
+	ui_element["opacity_slider"] = NewHSlider.new(vbox, 1.0, 0.0, 1.0, 0.01, false)
+	vbox.move_child(ui_element["opacity_slider"].hbox,index)
+	make_label(ui_element["opacity_slider"].hbox,"Opacity",0)
+	# Reset button for opacity (25% smaller icon)
+	ui_element["opacity_reset_button"] = make_button(ui_element["opacity_slider"].hbox, "icons/rotate-32.png", "Reset opacity to default (1.0)", false, 0.75)
+	ui_element["opacity_reset_button"].connect("pressed", self, "_on_opacity_reset_pressed",[tool_type,location])
+
 	# Make the colour palette if it isn't a Pattern or Wall tool
 	if not tool_type in ["PatternShapeTool","WallTool"]:
-
-		# Make opacity slider (0.0 to 1.0)
-		ui_element["opacity_slider"] = NewHSlider.new(vbox, 1.0, 0.0, 1.0, 0.01, false)
-		vbox.move_child(ui_element["opacity_slider"].hbox,index)
-		make_label(ui_element["opacity_slider"].hbox,"Opacity",0)
-		# Reset button for opacity (25% smaller icon)
-		ui_element["opacity_reset_button"] = make_button(ui_element["opacity_slider"].hbox, "icons/rotate-32.png", "Reset opacity to default (1.0)", false, 0.75)
-		ui_element["opacity_reset_button"].connect("pressed", self, "_on_opacity_reset_pressed",[tool_type,location])
 
 		# If we are in the main scatter tool, then we want to be able to select multiple colour preset
 		if tool_type == "ScatterTool" && location == "main":
@@ -556,12 +679,12 @@ func make_overridecolour_ui(tool_type: String, location: String):
 			vbox.add_child(colour_palette)
 		vbox.move_child(colour_palette,index)
 		ui_element["palette"] = colour_palette
-
-		# Set up opacity slider signals
-		ui_element["opacity_slider"].connect("value_changed", self, "_on_opacity_slider_ui_changed",[tool_type,location])
-		ui_element["opacity_slider"].connect("emit_history_event_signal", self, "create_update_custom_history",[null,tool_type,location,0.0])
 	else:
 		ui_element["palette"] = null
+
+	# Set up opacity slider signals for all tools
+	ui_element["opacity_slider"].connect("value_changed", self, "_on_opacity_slider_ui_changed",[tool_type,location])
+	ui_element["opacity_slider"].connect("emit_history_event_signal", self, "create_update_custom_history",[null,tool_type,location,0.0])
 
 	# Make the tint option control buttons
 	vbox.add_child(hbox)
@@ -586,6 +709,99 @@ func make_overridecolour_ui(tool_type: String, location: String):
 	# Create reset button
 	ui_element["reset_button"] = make_button(hbox, "icons/trash-icon.png", hint_tooltips["reset_button"], false)
 	ui_element["reset_button"].connect("pressed", self, "_on_reset_button_pressed",[tool_type,location])
+
+	# Create Natural Color Variants for objects
+	if tool_type in ["ObjectTool", "ScatterTool"]:
+		# Select panel: click-to-apply button
+		# Main panel: toggle that auto-randomises each new placed node
+		var is_select = (location == "select")
+		var is_main = (location == "main")
+
+		if is_select or is_main:
+			var variants_hbox = HBoxContainer.new()
+			vbox.add_child(variants_hbox)
+			vbox.move_child(variants_hbox, hbox.get_index() + 1)
+
+			if is_select:
+				# Click button for select tool
+				ui_element["natural_variants_button"] = make_button(variants_hbox, "icons/dice-icon.png", "Apply random variations to selected parameters on each selected object. Click the cog to configure.", false)
+				ui_element["natural_variants_button"].text = " Color Variants"
+				ui_element["natural_variants_button"].size_flags_horizontal = 3
+				ui_element["natural_variants_button"].connect("pressed", self, "_on_natural_variants_pressed", [tool_type])
+			else:
+				# Toggle button for main tool panel (auto-randomise on placement)
+				ui_element["natural_variants_button"] = make_button(variants_hbox, "icons/dice-icon.png", "When enabled, each newly placed object will have subtle random colour variations applied automatically. Click the cog to configure.", true)
+				ui_element["natural_variants_button"].text = " Color Variants"
+				ui_element["natural_variants_button"].size_flags_horizontal = 3
+				ui_element["natural_variants_button"].connect("toggled", self, "_on_variants_toggle_changed", [tool_type])
+
+			ui_element["variants_advanced_toggle"] = make_button(variants_hbox, "icons/cog-32.png", "Show/hide advanced randomisation settings.", true, 0.75)
+			ui_element["variants_advanced_toggle"].connect("toggled", self, "_on_variants_advanced_toggled", [tool_type, location])
+
+			# Advanced settings container (hidden by default)
+			var advanced_vbox = VBoxContainer.new()
+			advanced_vbox.visible = false
+			vbox.add_child(advanced_vbox)
+			vbox.move_child(advanced_vbox, variants_hbox.get_index() + 1)
+			ui_element["variants_advanced_vbox"] = advanced_vbox
+
+			# Range slider (1% to 100%, default 10%)
+			ui_element["variants_range_slider"] = NewHSlider.new(advanced_vbox, 10.0, 1.0, 100.0, 1.0, true)
+			make_label(ui_element["variants_range_slider"].hbox, "Range %", 0)
+			ui_element["variants_range_reset_button"] = make_button(ui_element["variants_range_slider"].hbox, "icons/rotate-32.png", "Reset range to default (10%)", false, 0.75)
+			ui_element["variants_range_reset_button"].connect("pressed", self, "_on_variants_range_reset_pressed", [tool_type, location])
+
+			# Parameter checkboxes
+			var checks_hbox = HBoxContainer.new()
+			advanced_vbox.add_child(checks_hbox)
+
+			var cb_hue = CheckBox.new()
+			cb_hue.text = "Hue"
+			cb_hue.pressed = true
+			checks_hbox.add_child(cb_hue)
+			ui_element["variants_cb_hue"] = cb_hue
+
+			var cb_sat = CheckBox.new()
+			cb_sat.text = "Sat"
+			cb_sat.pressed = true
+			checks_hbox.add_child(cb_sat)
+			ui_element["variants_cb_saturation"] = cb_sat
+
+			var cb_gamma = CheckBox.new()
+			cb_gamma.text = "Gamma"
+			cb_gamma.pressed = true
+			checks_hbox.add_child(cb_gamma)
+			ui_element["variants_cb_gamma"] = cb_gamma
+
+			var cb_levels = CheckBox.new()
+			cb_levels.text = "In Levels"
+			cb_levels.pressed = true
+			checks_hbox.add_child(cb_levels)
+			ui_element["variants_cb_levels"] = cb_levels
+
+			ui_element["variants_hbox"] = variants_hbox
+
+	# Create copy/paste settings buttons (only in select tool panel)
+	if location == "select":
+		var copypaste_hbox = HBoxContainer.new()
+		vbox.add_child(copypaste_hbox)
+
+		var copypaste_label = make_label(copypaste_hbox, "Copy/Paste Settings", 0)
+		copypaste_label.size_flags_horizontal = 3
+
+		ui_element["copy_settings_button"] = _make_text_button(copypaste_hbox, "Copy", "Copy the colour/shader settings from the first selected asset to the clipboard.", false)
+		ui_element["copy_settings_button"].connect("pressed", self, "copy_colour_settings", [tool_type])
+
+		ui_element["paste_settings_button"] = _make_text_button(copypaste_hbox, "Paste", "Paste the clipboard colour/shader settings to all selected assets of the same type.", false)
+		ui_element["paste_settings_button"].connect("pressed", self, "paste_colour_settings", [tool_type])
+		ui_element["paste_settings_button"].disabled = true
+
+		# For ObjectTool select panel: mark for unified color picker setup
+		# The tint palette will be relocated next to the DD Custom Color picker by setup_unified_select_picker()
+		if tool_type == "ObjectTool" and ui_element["palette"] != null:
+			ui_element["select_tint_relocated"] = true
+
+		ui_element["copypaste_hbox"] = copypaste_hbox
 
 	# Hide unneeded buttons
 	if tool_type in HIDE_NONGRADIENT_BUTTON_TOOLS:
@@ -618,6 +834,11 @@ func make_overridecolour_ui(tool_type: String, location: String):
 	ui_element["sat_output_levels_slider"].minSlider.connect("value_changed",self,"_on_sat_levels_slider_value_changed",[tool_type,location])
 	ui_element["sat_output_levels_slider"].maxSlider.connect("value_changed",self,"_on_sat_levels_slider_value_changed",[tool_type,location])
 
+	# On colorable protection checkbox change
+	ui_element["colorable_protect_hue"].connect("toggled", self, "_on_colorable_protect_toggled",[tool_type,location])
+	ui_element["colorable_protect_sat"].connect("toggled", self, "_on_colorable_protect_toggled",[tool_type,location])
+	ui_element["colorable_protect_light"].connect("toggled", self, "_on_colorable_protect_toggled",[tool_type,location])
+
 # Make a button and return it, with optional icon scale (default 1.0, use 0.75 for 25% smaller)
 func make_button(parent_node, icon_path: String, hint_tooltip: String, toggle_mode: bool, icon_scale: float = 1.0) -> Button:
 
@@ -640,6 +861,15 @@ func make_button(parent_node, icon_path: String, hint_tooltip: String, toggle_mo
 	parent_node.add_child(button)
 	return button
 
+# Make a simple text button (no icon) and return it
+func _make_text_button(parent_node, text: String, hint_tooltip: String, toggle_mode: bool) -> Button:
+	var button = Button.new()
+	button.text = text
+	button.toggle_mode = toggle_mode
+	button.hint_tooltip = hint_tooltip
+	parent_node.add_child(button)
+	return button
+
 # Function to show or hide the custom colour palette
 func set_custom_color_palette_visible(tool_type: String, location: String, make_visible: bool):
 
@@ -647,6 +877,30 @@ func set_custom_color_palette_visible(tool_type: String, location: String, make_
 
 	var ui_element = ui_config[tool_type][location]
 
+	# Unified picker handling for ObjectTool select panel
+	if tool_type == "ObjectTool" and location == "select" and ui_element.has("select_tint_relocated"):
+		# Hide the "Tint Color" label (only shown in mixed mode via set_custom_color_palette_visible_mixed)
+		if ui_element.has("unified_tint_label"):
+			ui_element["unified_tint_label"].visible = false
+		if make_visible:
+			# Colorable asset selected: show Custom Color picker, hide tint palette
+			if ui_element["custom_color_palette"] != null:
+				ui_element["custom_color_palette"].visible = true
+			if ui_element["custom_color_label"] != null:
+				ui_element["custom_color_label"].visible = true
+			ui_element["palette"].visible = false
+		else:
+			# Non-colorable asset selected: show tint palette at bottom, hide Custom Color
+			if ui_element["custom_color_palette"] != null:
+				ui_element["custom_color_palette"].visible = false
+			if ui_element["custom_color_label"] != null:
+				ui_element["custom_color_label"].visible = false
+			ui_element["palette"].visible = true
+		# Always show non-gradient buttons (HSL controls) regardless of colorable state
+		show_non_gradient_buttons(tool_type, location)
+		return
+
+	# Default behaviour for other tools/locations
 	# If we have successfully identified the custom colour palettes then we show/hide them
 	if ui_element["custom_color_palette"] != null && ui_element["custom_color_label"] != null:
 		ui_element["custom_color_palette"].visible = make_visible
@@ -654,20 +908,39 @@ func set_custom_color_palette_visible(tool_type: String, location: String, make_
 	
 	# Choose whether to set the ui for custom colour buttons visible
 	if is_object_tool_type(tool_type):
-		# If we are aking the custom colours visible, then we hide the non-gradient buttons
-		if make_visible:
-			hide_non_gradient_buttons(tool_type,location)
-		else:
-			show_non_gradient_buttons(tool_type,location)
+		# Always show non-gradient buttons (HSL controls) so saturate mode works for colorable assets too
+		show_non_gradient_buttons(tool_type, location)
 		
-		# Set the palette invisible which is a bit odd for mixed selections
+		# Set the palette invisible when colorable asset is selected (custom color picker takes over)
 		ui_config[tool_type][location]["palette"].visible = not make_visible
-		ui_config[tool_type][location]["opacity_slider"].hbox.visible = not make_visible
+		# Always show opacity slider (it works for colorable assets too)
+		ui_config[tool_type][location]["opacity_slider"].hbox.visible = true
 
 		# If we are in the main tool, then check whether we should update the object library custom colour to match the dd custom colour palette
 		if location == "main":
 			# It should always reflect the custom colour and DD sometimes takes from elsewhere
 			set_object_library_grid_custom_colour_to_dd_palette_colour(tool_type,location)
+
+
+# Function to show both color pickers when a mixed selection (colorable + non-colorable) is active
+func set_custom_color_palette_visible_mixed(tool_type: String, location: String):
+
+	outputlog("set_custom_color_palette_visible_mixed",2)
+
+	var ui_element = ui_config[tool_type][location]
+
+	# Show both pickers
+	if ui_element.has("custom_color_palette") and ui_element["custom_color_palette"] != null:
+		ui_element["custom_color_palette"].visible = true
+	if ui_element.has("custom_color_label") and ui_element["custom_color_label"] != null:
+		ui_element["custom_color_label"].visible = true
+	if ui_element.has("palette") and ui_element["palette"] != null:
+		ui_element["palette"].visible = true
+	# Show the "Tint Color" label above the tint palette
+	if ui_element.has("unified_tint_label"):
+		ui_element["unified_tint_label"].visible = true
+
+	show_non_gradient_buttons(tool_type, location)
 
 
 # Function to register all the custom color palettes in the ui config dictionary
@@ -687,6 +960,9 @@ func find_all_custom_color_palettes():
 				ui_config[tool_type][location][custom_color_control_type].colorPickerPopup.connect("popup_hide", self, "on_dd_custom_color_control_changed",[0,0,tool_type,location])
 				ui_config[tool_type][location][custom_color_control_type].colorList.connect("item_selected", self, "on_dd_custom_color_control_changed",[0,tool_type,location])
 				ui_config[tool_type][location][custom_color_control_type].colorList.connect("multi_selected", self, "on_dd_custom_color_control_changed",[tool_type,location])
+				# Also connect color_changed for real-time preview in HSL mode
+				if ui_config[tool_type][location][custom_color_control_type].colorPicker != null:
+					ui_config[tool_type][location][custom_color_control_type].colorPicker.connect("color_changed", self, "on_dd_custom_color_control_changed",[0,tool_type,location])
 				
 
 		# For custom colour picker button tools
@@ -738,6 +1014,44 @@ func find_custom_color_palette(tool_type: String, location: String, custom_color
 				ui_config[tool_type][location]["custom_color_label"] = global.Editor.Tools["SelectTool"].Controls["WallColor"].get_parent().get_parent().get_child(global.Editor.Tools["SelectTool"].Controls["WallColor"].get_parent().get_index()-1)
 
 
+# Function to set up the unified color picker in the ObjectTool select panel.
+# Relocates the tint palette to sit just after the DD Custom Color picker so that
+# we can automatically switch between showing one or the other depending on whether
+# the selected asset is colorable or not.
+func setup_unified_select_picker():
+
+	var tool_type = "ObjectTool"
+	var location = "select"
+	if not ui_config.has(tool_type): return
+	if not ui_config[tool_type].has(location): return
+	var ui_element = ui_config[tool_type][location]
+	if not ui_element.has("select_tint_relocated"): return
+	if ui_element["palette"] == null: return
+	if not ui_element.has("custom_color_palette"): return
+	if ui_element["custom_color_palette"] == null: return
+
+	var palette = ui_element["palette"]
+	var custom_color_palette = ui_element["custom_color_palette"]
+	var vbox = find_select_vbox(tool_type)
+	if vbox == null: return
+
+	# Move the tint palette to just after the Custom Color palette (physically reparent it)
+	palette.get_parent().remove_child(palette)
+	vbox.add_child(palette)
+	vbox.move_child(palette, custom_color_palette.get_index() + 1)
+	palette.visible = false  # hidden by default, visibility controlled by set_custom_color_palette_visible
+
+	# Create a "Tint Color" label just before the relocated tint palette (only shown in mixed selections)
+	var tint_label = Label.new()
+	tint_label.text = "Tint Color"
+	tint_label.visible = false
+	vbox.add_child(tint_label)
+	vbox.move_child(tint_label, palette.get_index())
+	ui_element["unified_tint_label"] = tint_label
+
+	outputlog("setup_unified_select_picker: done", 0)
+
+
 #########################################################################################################
 ##
 ## SET UI TO SELECTED NODE VALUES FUNCTIONS
@@ -750,6 +1064,8 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 	var location = "select"
 
 	outputlog("set_colour_ui_to_selected_node_values",2)
+
+	outputlog("set_colour_ui_to_selected_node_values: tool_type=" + str(tool_type) + " node_id=" + str(global.Editor.Tools["SelectTool"].Selected[0].get_meta("node_id")) + " has_data=" + str(customdatamanager.has_data(global.Editor.Tools["SelectTool"].Selected[0].get_meta("node_id"))),0)
 
 	var node_id = global.Editor.Tools["SelectTool"].Selected[0].get_meta("node_id")
 	outputlog("node_id: " + str(node_id),2)
@@ -766,7 +1082,11 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 		# Update the colour of the palette (with triggering a signal so all selected nodes update)
 		if not tool_type in NON_CUSTOM_PALETTE_TOOLS:
 			ui_element["palette"].SetColor(Color(node_data["colour"]),false)
-			ui_element["opacity_slider"].slider_and_spinbox_change(Color(node_data["colour"]).a,true)
+			# Restore opacity: prefer explicit opacity key, fall back to colour alpha
+			if node_data.has("opacity"):
+				ui_element["opacity_slider"].slider_and_spinbox_change(node_data["opacity"],true)
+			else:
+				ui_element["opacity_slider"].slider_and_spinbox_change(Color(node_data["colour"]).a,true)
 
 		# When we are using the DD custom colour palette, then force set the palette to the node item. This should be redundant but may cause race condition issues
 		else:
@@ -835,6 +1155,15 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 				else:
 					set_property_but_block_signals(ui_element["sat_output_levels_slider"].minSlider, "value", 0.0)
 					set_property_but_block_signals(ui_element["sat_output_levels_slider"].maxSlider, "value", 1.0)
+				# Restore colorable protection checkboxes
+				if node_data.has("colorable_protect"):
+					set_property_but_block_signals(ui_element["colorable_protect_hue"], "pressed", node_data["colorable_protect"]["hue"])
+					set_property_but_block_signals(ui_element["colorable_protect_sat"], "pressed", node_data["colorable_protect"]["saturation"])
+					set_property_but_block_signals(ui_element["colorable_protect_light"], "pressed", node_data["colorable_protect"]["lightness"])
+				else:
+					set_property_but_block_signals(ui_element["colorable_protect_hue"], "pressed", true)
+					set_property_but_block_signals(ui_element["colorable_protect_sat"], "pressed", true)
+					set_property_but_block_signals(ui_element["colorable_protect_light"], "pressed", true)
 		
 		outputlog("get colour config: " + str(get_colour_config_from_ui(tool_type, location)),3)
 		_on_colour_option_button_pressed(true, node_data["shader_type"], tool_type, location, false)
@@ -859,14 +1188,32 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 		ui_element["sat_midtones_slider"].slider_and_spinbox_change(0.5, true)
 		set_property_but_block_signals(ui_element["sat_output_levels_slider"].minSlider, "value", 0.0)
 		set_property_but_block_signals(ui_element["sat_output_levels_slider"].maxSlider, "value", 1.0)
+		# Reset colorable protection checkboxes to default (all protected)
+		set_property_but_block_signals(ui_element["colorable_protect_hue"], "pressed", true)
+		set_property_but_block_signals(ui_element["colorable_protect_sat"], "pressed", true)
+		set_property_but_block_signals(ui_element["colorable_protect_light"], "pressed", true)
 
 		_on_colour_option_button_pressed(true, "none", tool_type, location, false)
 	
-	# Check if we have only selected custom colour objects and hide or show the non-gradient 
-	if is_selection_only_custom_colour_objects() || tool_type in ["PatternShapeTool","WallTool"]:
-		hide_non_gradient_buttons(tool_type,location)
-	else:
-		show_non_gradient_buttons(tool_type,location)
+	# Show non-gradient buttons (HSL) for all tools now
+	# Previously we hid them for colorable objects and walls, but now we support HSL on those too
+	show_non_gradient_buttons(tool_type,location)
+
+	# Auto-switch between Custom Color and Tint palette in the unified select panel
+	if tool_type == "ObjectTool" and location == "select":
+		var has_colorable = false
+		var has_non_colorable = false
+		for node in global.Editor.Tools["SelectTool"].Selected:
+			if get_node_type(node) == "objects":
+				if node.HasCustomColor():
+					has_colorable = true
+				else:
+					has_non_colorable = true
+		if has_colorable and has_non_colorable:
+			# Mixed selection: show both pickers
+			set_custom_color_palette_visible_mixed(tool_type, location)
+		else:
+			set_custom_color_palette_visible(tool_type, location, has_colorable)
 	
 # Function to force the dd custom colour ui to match the selected node in case the timeframe for setting it is out of kilter with this mod
 func force_refresh_dd_custom_colour_ui_from_selected_node(node: Node2D, tool_type: String):
@@ -902,23 +1249,30 @@ func set_colour_palette_to_selection():
 
 	# Get the first selectable node
 	if global.Editor.Tools["SelectTool"].Selected.size() > 0:
-		tool_type = TOOL_TYPE_LOOKUP_BY_SELECTABLE[str(global.Editor.Tools["SelectTool"].GetSelectableType(global.Editor.Tools["SelectTool"].Selected[0]))]
+		var selectable_key = str(global.Editor.Tools["SelectTool"].GetSelectableType(global.Editor.Tools["SelectTool"].Selected[0]))
+		if not TOOL_TYPE_LOOKUP_BY_SELECTABLE.has(selectable_key):
+			return
+		tool_type = TOOL_TYPE_LOOKUP_BY_SELECTABLE[selectable_key]
 		if tool_type == null:
+			outputlog("set_colour_palette_to_selection: tool_type is null, returning", 0)
 			return
 	else:
 		return
 	
-	outputlog("set_colour_palette_to_selection(): tool_type: " + str(tool_type),2)
+	outputlog("set_colour_palette_to_selection(): tool_type: " + str(tool_type),0)
 
 	# If the Options vboxes are visible then only a single type is selected. This should always be the case when the function is called.
 	# If we do not have only one type of asset chosen then return
 	if find_select_vbox(tool_type) != null:
+		outputlog("set_colour_palette_to_selection: vbox visible: " + str(find_select_vbox(tool_type).visible), 0)
 		# If the select options is not visible then we have multiple types and we should stop and return
 		if not find_select_vbox(tool_type).visible:
-			outputlog("select vbox not visible",2)
+			outputlog("select vbox not visible",0)
 			if not check_all_nodes_of_same_type(global.Editor.Tools["SelectTool"].Selected):
+				outputlog("set_colour_palette_to_selection: not all same type, returning", 0)
 				return
 		
+		outputlog("set_colour_palette_to_selection: calling set_colour_ui_to_selected_node_values", 0)
 		set_colour_ui_to_selected_node_values(global.Editor.Tools["SelectTool"].Selected[0], tool_type)
 
 
@@ -976,6 +1330,12 @@ func get_colour_config_from_ui(tool_type: String, location: String, debug: bool 
 				"out_blacks": ui_element["sat_output_levels_slider"].minSlider.value,
 				"out_whites": ui_element["sat_output_levels_slider"].maxSlider.value
 			}
+			# Colorable protection: when checked, the slider does NOT affect custom color areas
+			colour_config["colorable_protect"] = {
+				"hue": ui_element["colorable_protect_hue"].pressed,
+				"saturation": ui_element["colorable_protect_sat"].pressed,
+				"lightness": ui_element["colorable_protect_light"].pressed
+			}
 
 	# For patterns or walls
 	if tool_type in NON_CUSTOM_PALETTE_TOOLS:
@@ -984,12 +1344,28 @@ func get_colour_config_from_ui(tool_type: String, location: String, debug: bool 
 			outputlog("custom_color_button color: " + str(ui_element["custom_color_button"].color.to_html()),3)
 			outputlog("custom_color_button picker color: " + str(ui_element["custom_color_button"].get_picker().color.to_html()),3)
 			# Note we are using the color picker color here as there seems to be a delay in the colour palette updating
-			colour_config["colour"] = ui_element["custom_color_button"].color.to_html()
+			var pattern_color = ui_element["custom_color_button"].color
+			# Apply opacity from slider for patterns
+			if ui_element.has("opacity_slider"):
+				pattern_color.a = ui_element["opacity_slider"].value
+			colour_config["colour"] = pattern_color.to_html()
+			colour_config["opacity"] = pattern_color.a
 		else:
 			colour_config["colour"] = "ffffffff"
+			colour_config["opacity"] = 1.0
 	else:
 		# Note we are using the color picker color here as there seems to be a delay in the colour palette updating
-		colour_config["colour"] = ui_element["palette"].colorPicker.color.to_html()	
+		colour_config["colour"] = ui_element["palette"].colorPicker.color.to_html()
+		# Store opacity from slider explicitly (needed for colorable objects where colour gets reset to white)
+		if ui_element.has("opacity_slider"):
+			colour_config["opacity"] = ui_element["opacity_slider"].value
+		# Also store the custom color for colorable objects (from DD's custom color palette)
+		if ui_element.has("custom_color_palette") and ui_element["custom_color_palette"] != null:
+			var custom_palette = ui_element["custom_color_palette"]
+			if custom_palette.has_method("get_picker"):
+				colour_config["colorable_custom_color"] = custom_palette.get_picker().color.to_html()
+			elif custom_palette.get("colorPicker") != null:
+				colour_config["colorable_custom_color"] = custom_palette.colorPicker.color.to_html()
 
 	outputlog("colour_config: " + str(colour_config),3)
 
@@ -1026,6 +1402,14 @@ func set_colour_of_selection(tool_type: String, reset_levels_to_default: bool):
 			set_levels_ui_to_base_asset_brightness(tool_type, location, global.Editor.Tools["SelectTool"].Selected[0])
 
 
+# Helper: call at the start of each UI change handler to ensure previous changes are finalized
+# before starting a new type of change. This produces one undo point per change type.
+func _begin_change(source: String):
+	if _current_change_source != "" and _current_change_source != source:
+		# A different type of change was in progress — finalize it
+		combinedshader.finalize_pending_history()
+	_current_change_source = source
+
 # Function to update a placed node with the colour values in the ui
 func update_placed_node_with_colour_ui_values(node: Node2D, tool_type: String, location: String, reset_levels_to_default: bool):
 
@@ -1055,6 +1439,344 @@ func update_placed_node_with_colour_ui_values(node: Node2D, tool_type: String, l
 			
 	# Set the tint colour	
 	set_tint_colour(node.get_meta("node_id"),TYPE_LOOKUP[tool_type], colour_config, false)
+
+#########################################################################################################
+##
+## COPY AND PASTE COLOUR SETTINGS FUNCTIONS
+##
+#########################################################################################################
+
+# Copy the colour/shader settings from the first selected node to the clipboard
+func copy_colour_settings(tool_type: String):
+
+	outputlog("copy_colour_settings: " + str(tool_type), 0)
+
+	var selected = global.Editor.Tools["SelectTool"].Selected
+	if selected.size() == 0:
+		outputlog("copy_colour_settings: nothing selected", 0)
+		return
+
+	var node = selected[0]
+	if not is_instance_valid(node): return
+	if not node.has_meta("node_id"): return
+
+	var node_id = node.get_meta("node_id")
+	var node_type = TYPE_LOOKUP.get(tool_type, "")
+	if node_type == "": return
+
+	# Get the stored data for this node
+	var data = customdatamanager.get_data_or_default(node_id)
+
+	# Extract only the colour/shader keys
+	clipboard_data = {}
+	for key in CLIPBOARD_KEYS:
+		if data.has(key):
+			# Deep copy dictionaries and arrays
+			if data[key] is Dictionary:
+				clipboard_data[key] = data[key].duplicate(true)
+			elif data[key] is Array:
+				clipboard_data[key] = data[key].duplicate(true)
+			else:
+				clipboard_data[key] = data[key]
+
+	clipboard_type = node_type
+
+	# For colorable objects, always capture the current DD custom color from the node directly
+	if node_type == "objects" and node.has_method("HasCustomColor") and node.HasCustomColor():
+		clipboard_data["colorable_custom_color"] = node.GetCustomColor().to_html()
+
+	outputlog("copy_colour_settings: copied from node " + str(node_id) + " type: " + str(node_type) + " data: " + str(clipboard_data), 0)
+
+	# Update the paste button state for all tools
+	_update_paste_button_states()
+
+# Paste the clipboard colour/shader settings to all selected nodes of the same type
+func paste_colour_settings(tool_type: String):
+
+	outputlog("paste_colour_settings: " + str(tool_type), 0)
+
+	if clipboard_data == null or clipboard_data.empty():
+		outputlog("paste_colour_settings: clipboard is empty", 0)
+		return
+
+	var node_type = TYPE_LOOKUP.get(tool_type, "")
+	if node_type == "": return
+
+	# Check type compatibility
+	if clipboard_type != node_type:
+		outputlog("paste_colour_settings: type mismatch. clipboard=" + str(clipboard_type) + " target=" + str(node_type), 0)
+		return
+
+	var selected = global.Editor.Tools["SelectTool"].Selected
+	if selected.size() == 0: return
+
+	# Apply to each selected node
+	for node in selected:
+		if not is_instance_valid(node): continue
+		if not node.has_meta("node_id"): continue
+
+		var node_id = node.get_meta("node_id")
+		if not global.World.HasNodeID(node_id): continue
+
+		# Build the config to apply from the clipboard data
+		var paste_config = clipboard_data.duplicate(true)
+		paste_config["type"] = node_type
+
+		# Record history before applying
+		combinedshader.add_update_history_data(node_id, tool_type, customdatamanager.get_data_or_default(node_id))
+
+		# For colorable objects, apply the custom color from clipboard to DD's node
+		if node_type == "objects" and node.has_method("HasCustomColor") and node.HasCustomColor():
+			if paste_config.has("colorable_custom_color") and paste_config["colorable_custom_color"] != null:
+				node.SetCustomColor(Color(paste_config["colorable_custom_color"]))
+			# Also store the DD color we copied from
+			if paste_config.has("original_dd_color") and paste_config["original_dd_color"] != null:
+				paste_config["colorable_custom_color"] = node.GetCustomColor().to_html()
+
+		# Apply the settings to the node
+		set_tint_colour(node_id, node_type, paste_config, false)
+
+		# Record history after applying
+		combinedshader.add_update_history_data(node_id, tool_type, paste_config)
+
+	# Update the UI to reflect the first selected node's new state
+	if selected.size() > 0 and is_instance_valid(selected[0]):
+		set_colour_palette_to_selection()
+
+	outputlog("paste_colour_settings: applied to " + str(selected.size()) + " nodes", 0)
+
+# Update paste button enabled/disabled state based on clipboard compatibility
+func _update_paste_button_states():
+	for tool_type in BUILD_THESE_TOOLS:
+		if not ui_config.has(tool_type): continue
+		if not ui_config[tool_type].has("select"): continue
+		var ui_element = ui_config[tool_type]["select"]
+		if ui_element.has("paste_settings_button"):
+			var node_type = TYPE_LOOKUP.get(tool_type, "")
+			ui_element["paste_settings_button"].disabled = (clipboard_data == null or clipboard_type != node_type)
+
+#########################################################################################################
+##
+## NATURAL COLOR VARIANTS
+##
+#########################################################################################################
+
+# Default randomisation range (fraction, so 0.15 = +/- 15%)
+const NATURAL_VARIANT_RANGE = 0.10
+
+# Toggle advanced settings visibility
+func _on_variants_advanced_toggled(pressed: bool, tool_type: String, location: String):
+	var ui_element = ui_config[tool_type][location]
+	if ui_element.has("variants_advanced_vbox"):
+		ui_element["variants_advanced_vbox"].visible = pressed
+
+# Called when the Color Variants toggle is switched on/off in main panel
+func _on_variants_toggle_changed(pressed: bool, tool_type: String):
+	if pressed:
+		_regenerate_preview_variant_offsets(tool_type)
+	else:
+		_preview_variant_offsets = {}
+	set_preview_colour(tool_type, true)
+
+# Reset range slider to default (10%)
+func _on_variants_range_reset_pressed(tool_type: String, location: String):
+	var ui_element = ui_config[tool_type][location]
+	if ui_element.has("variants_range_slider"):
+		ui_element["variants_range_slider"].slider_and_spinbox_change(10.0, false)
+
+# Apply subtle random colour variations to each selected object
+func _on_natural_variants_pressed(tool_type: String):
+
+	outputlog("_on_natural_variants_pressed: " + str(tool_type), 0)
+
+	var location = "select"
+	var node_type = TYPE_LOOKUP.get(tool_type, "")
+	if node_type == "": return
+
+	var selected = global.Editor.Tools["SelectTool"].Selected
+	if selected.size() == 0: return
+
+	# Apply a unique random offset to each selected node based on its own current values
+	for node in selected:
+		if not is_instance_valid(node): continue
+		if not node.has_meta("node_id"): continue
+
+		var node_id = node.get_meta("node_id")
+		if not global.World.HasNodeID(node_id): continue
+
+		# Record history before change
+		combinedshader.add_update_history_data(node_id, tool_type, customdatamanager.get_data_or_default(node_id))
+
+		# Apply variant
+		_apply_variant_to_node(node_id, tool_type, location)
+
+		# Record history after change
+		combinedshader.add_update_history_data(node_id, tool_type, customdatamanager.get_data_or_default(node_id))
+
+	# Refresh the UI to show the first selected node's values
+	if selected.size() > 0 and is_instance_valid(selected[0]):
+		set_colour_palette_to_selection()
+
+	outputlog("_on_natural_variants_pressed: applied variants to " + str(selected.size()) + " nodes", 0)
+
+# Apply a single random colour variation to a specific node (used by both select-tool and auto-placement)
+func _apply_variant_to_node(node_id: int, tool_type: String, location: String):
+
+	var node_type = TYPE_LOOKUP.get(tool_type, "")
+	if node_type == "": return
+
+	if not global.World.HasNodeID(node_id): return
+
+	var ui_element = ui_config[tool_type][location]
+
+	# Read settings from advanced panel if available, otherwise use defaults
+	var variant_range = NATURAL_VARIANT_RANGE
+	var do_hue = true
+	var do_saturation = true
+	var do_gamma = true
+	var do_levels = true
+
+	if ui_element.has("variants_range_slider"):
+		variant_range = ui_element["variants_range_slider"].value / 100.0
+	if ui_element.has("variants_cb_hue"):
+		do_hue = ui_element["variants_cb_hue"].pressed
+	if ui_element.has("variants_cb_saturation"):
+		do_saturation = ui_element["variants_cb_saturation"].pressed
+	if ui_element.has("variants_cb_gamma"):
+		do_gamma = ui_element["variants_cb_gamma"].pressed
+	if ui_element.has("variants_cb_levels"):
+		do_levels = ui_element["variants_cb_levels"].pressed
+
+	# Get this node's stored data as the base
+	var node_data = customdatamanager.get_data_or_default(node_id)
+	node_data["type"] = node_type
+
+	var base_saturation = node_data["saturation"] if node_data.has("saturation") else 1.0
+	var base_hue = node_data["hue_shift"] if node_data.has("hue_shift") else 0.0
+	var base_gamma = 1.0
+	var base_blacks = 0.0
+	var base_whites = 1.0
+	if node_data.has("sat_levels"):
+		if node_data["sat_levels"].has("midtones"):
+			base_gamma = node_data["sat_levels"]["midtones"]
+		if node_data["sat_levels"].has("blacks"):
+			base_blacks = node_data["sat_levels"]["blacks"]
+		if node_data["sat_levels"].has("whites"):
+			base_whites = node_data["sat_levels"]["whites"]
+
+	node_data["shader_type"] = "saturation"
+
+	if not node_data.has("sat_levels"):
+		node_data["sat_levels"] = {"blacks": 0.0, "midtones": 1.0, "whites": 1.0}
+	if not node_data.has("sat_output_levels"):
+		node_data["sat_output_levels"] = {"out_blacks": 0.0, "out_whites": 1.0}
+	if not node_data.has("contrast"):
+		node_data["contrast"] = 0.0
+	if not node_data.has("lightness"):
+		node_data["lightness"] = 0.0
+	if not node_data.has("invert"):
+		node_data["invert"] = false
+
+	if do_saturation:
+		var base_sat_slider = saturation_to_slider(base_saturation)
+		var new_sat_slider = clamp(base_sat_slider + rand_range(-variant_range, variant_range), 0.0, 1.0)
+		node_data["saturation"] = slider_to_saturation(new_sat_slider)
+
+	if do_hue:
+		node_data["hue_shift"] = clamp(base_hue + 2.0 * rand_range(-variant_range, variant_range), -1.0, 1.0)
+
+	if do_gamma:
+		var base_gamma_slider = gamma_to_slider(base_gamma)
+		var new_gamma_slider = clamp(base_gamma_slider + rand_range(-variant_range, variant_range), 0.0, 1.0)
+		node_data["sat_levels"]["midtones"] = slider_to_gamma(new_gamma_slider)
+
+	if do_levels:
+		node_data["sat_levels"]["blacks"] = clamp(base_blacks + rand_range(-variant_range, variant_range), 0.0, 1.0)
+		node_data["sat_levels"]["whites"] = clamp(base_whites + rand_range(-variant_range, variant_range), 0.0, 1.0)
+		if node_data["sat_levels"]["blacks"] >= node_data["sat_levels"]["whites"]:
+			node_data["sat_levels"]["blacks"] = base_blacks
+			node_data["sat_levels"]["whites"] = base_whites
+
+	set_tint_colour(node_id, node_type, node_data, false)
+
+# Generate new random offsets for the preview variant display
+func _regenerate_preview_variant_offsets(tool_type: String):
+	var location = "main"
+	if not ui_config.has(tool_type): return
+	if not ui_config[tool_type].has(location): return
+	var ui_element = ui_config[tool_type][location]
+
+	var variant_range = NATURAL_VARIANT_RANGE
+	if ui_element.has("variants_range_slider"):
+		variant_range = ui_element["variants_range_slider"].value / 100.0
+
+	_preview_variant_offsets = {
+		"sat_slider_offset": rand_range(-variant_range, variant_range),
+		"hue_offset": 2.0 * rand_range(-variant_range, variant_range),
+		"gamma_slider_offset": rand_range(-variant_range, variant_range),
+		"blacks_offset": rand_range(-variant_range, variant_range),
+		"whites_offset": rand_range(-variant_range, variant_range)
+	}
+
+# Apply stored preview variant offsets to a colour_config dictionary (modifies in place)
+func _apply_preview_variant_to_config(colour_config: Dictionary, tool_type: String):
+	var location = "main"
+	if not ui_config.has(tool_type): return colour_config
+	if not ui_config[tool_type].has(location): return colour_config
+	var ui_element = ui_config[tool_type][location]
+	if _preview_variant_offsets.empty(): return colour_config
+
+	var do_hue = true
+	var do_saturation = true
+	var do_gamma = true
+	var do_levels = true
+	if ui_element.has("variants_cb_hue"):
+		do_hue = ui_element["variants_cb_hue"].pressed
+	if ui_element.has("variants_cb_saturation"):
+		do_saturation = ui_element["variants_cb_saturation"].pressed
+	if ui_element.has("variants_cb_gamma"):
+		do_gamma = ui_element["variants_cb_gamma"].pressed
+	if ui_element.has("variants_cb_levels"):
+		do_levels = ui_element["variants_cb_levels"].pressed
+
+	# Ensure saturation mode keys exist
+	colour_config["shader_type"] = "saturation"
+	if not colour_config.has("saturation"):
+		colour_config["saturation"] = 1.0
+	if not colour_config.has("hue_shift"):
+		colour_config["hue_shift"] = 0.0
+	if not colour_config.has("sat_levels"):
+		colour_config["sat_levels"] = {"blacks": 0.0, "midtones": 1.0, "whites": 1.0}
+	if not colour_config.has("sat_output_levels"):
+		colour_config["sat_output_levels"] = {"out_blacks": 0.0, "out_whites": 1.0}
+	if not colour_config.has("contrast"):
+		colour_config["contrast"] = 0.0
+	if not colour_config.has("lightness"):
+		colour_config["lightness"] = 0.0
+	if not colour_config.has("invert"):
+		colour_config["invert"] = false
+
+	if do_saturation:
+		var base_sat_slider = saturation_to_slider(colour_config["saturation"])
+		colour_config["saturation"] = slider_to_saturation(clamp(base_sat_slider + _preview_variant_offsets["sat_slider_offset"], 0.0, 1.0))
+
+	if do_hue:
+		colour_config["hue_shift"] = clamp(colour_config["hue_shift"] + _preview_variant_offsets["hue_offset"], -1.0, 1.0)
+
+	if do_gamma:
+		var base_gamma_slider = gamma_to_slider(colour_config["sat_levels"]["midtones"])
+		colour_config["sat_levels"]["midtones"] = slider_to_gamma(clamp(base_gamma_slider + _preview_variant_offsets["gamma_slider_offset"], 0.0, 1.0))
+
+	if do_levels:
+		var base_blacks = colour_config["sat_levels"]["blacks"]
+		var base_whites = colour_config["sat_levels"]["whites"]
+		colour_config["sat_levels"]["blacks"] = clamp(base_blacks + _preview_variant_offsets["blacks_offset"], 0.0, 1.0)
+		colour_config["sat_levels"]["whites"] = clamp(base_whites + _preview_variant_offsets["whites_offset"], 0.0, 1.0)
+		if colour_config["sat_levels"]["blacks"] >= colour_config["sat_levels"]["whites"]:
+			colour_config["sat_levels"]["blacks"] = base_blacks
+			colour_config["sat_levels"]["whites"] = base_whites
+
+	return colour_config
 
 #########################################################################################################
 ##
@@ -1235,6 +1957,49 @@ func is_selection_only_custom_colour_objects():
 	
 	return true
 
+# Function to check if the selection contains colorable assets (objects with HasCustomColor or colorable patterns)
+func is_selection_colorable(tool_type: String) -> bool:
+
+	outputlog("is_selection_colorable",2)
+	
+	# Check if any selected item is colorable
+	for node in global.Editor.Tools["SelectTool"].Selected:
+		if get_node_type(node) == "objects":
+			if node.HasCustomColor():
+				return true
+		elif get_node_type(node) == "pattern_shapes":
+			if combinedshader.is_colorable_pattern(node):
+				return true
+	
+	return false
+
+# Helper: check if the currently selected object in the main panel library is colorable
+func _is_current_main_object_colorable(tool_type: String) -> bool:
+	if not is_object_tool_type(tool_type):
+		return false
+	var preview_node = get_preview_node(tool_type)
+	if preview_node != null and preview_node.has_method("HasCustomColor"):
+		return preview_node.HasCustomColor()
+	return false
+
+# Function to update colorable protect checkbox visibility based on current selection
+func update_colorable_protect_visibility(tool_type: String, location: String):
+	var ui_element = get_ui_element(tool_type, location)
+	if ui_element == null:
+		return
+	if not ui_element.has("colorable_protect_hbox"):
+		return
+	# Only show if saturation mode is active
+	var sat_active = ui_element["saturate_button"].pressed
+	if not sat_active:
+		ui_element["colorable_protect_hbox"].visible = false
+		return
+	# Check if selection is colorable
+	if location == "select":
+		ui_element["colorable_protect_hbox"].visible = is_selection_colorable(tool_type)
+	elif location == "main":
+		ui_element["colorable_protect_hbox"].visible = _is_current_main_object_colorable(tool_type)
+
 # Function to remove the tint colour config from custom colour nodes.
 # Note that this allows us to have tint colours active in the UI without propagating them to colorable objects.
 # However this prevents us from tinting colorable objects, eg setting them to semi-transparent
@@ -1382,6 +2147,24 @@ func set_tint_colour(node_id: int, type: String, colour_config: Dictionary, forc
 		# Remove tint colour from any object that is colorable 
 		colour_config = remove_tint_colour_from_custom_colour_objects(node, colour_config)
 
+		# For colorable objects, apply custom color from config to DD's node (for undo/redo and paste)
+		if type == "objects" and node.has_method("HasCustomColor") and node.HasCustomColor():
+			if colour_config.has("colorable_custom_color") and colour_config["colorable_custom_color"] != null:
+				var target_color = Color(colour_config["colorable_custom_color"])
+				if node.GetCustomColor() != target_color:
+					node.SetCustomColor(target_color)
+
+		# Handle original_color for patterns
+		if customdatamanager.has_data(node_id):
+			var stored = customdatamanager.get_data(node_id)
+			# If we're resetting (shader_type is none), clear original_color
+			if colour_config.has("shader_type") and colour_config["shader_type"] == "none":
+				if stored.has("original_color"):
+					stored.erase("original_color")
+			# Otherwise preserve original_color if it exists
+			elif stored.has("original_color") and stored["original_color"] != null:
+				colour_config["original_color"] = stored["original_color"]
+
 		# Set custom values on the node
 		set_custom_attributes_on_map_node(node, type, colour_config, force_shader)
 
@@ -1436,6 +2219,9 @@ func set_preview_colour(tool_type: String, force_change: bool):
 	# Remove any tint colour from the custom colour objects.
 	colour_config = remove_tint_colour_from_custom_colour_objects(preview_node, colour_config)
 
+	# Save previous texture before overwriting store_preview_config
+	var _previous_preview_texture = store_preview_config.get("texture", "")
+
 	# Update stored values which include the colours
 	store_preview_config = colour_config.duplicate(true)
 	
@@ -1445,8 +2231,20 @@ func set_preview_colour(tool_type: String, force_change: bool):
 
 	outputlog("store_preview_config: " + str(store_preview_config),2)
 
-	# If there is no preview and the data is default only
-	if customdatamanager.is_data_default(colour_config):
+	# Check if Color Variants toggle is active for this tool
+	var variants_active = false
+	if tool_type in ["ObjectTool", "ScatterTool"]:
+		if ui_element.has("natural_variants_button"):
+			variants_active = ui_element["natural_variants_button"].pressed
+
+	# If Color Variants toggle is active and a new preview cycle is needed, regenerate offsets
+	# The flag is set by: Core.gd preview_changed (asset cycle) and set_tint_colour_on_new_node (after placement)
+	if variants_active and _preview_asset_changed:
+		_preview_asset_changed = false
+		_regenerate_preview_variant_offsets(tool_type)
+
+	# If there is no preview and the data is default only (but allow through if variants are active)
+	if customdatamanager.is_data_default(colour_config) and not variants_active:
 
 		# Correct the custom colour if it isn't right
 		if is_object_tool_type(tool_type):
@@ -1463,6 +2261,10 @@ func set_preview_colour(tool_type: String, force_change: bool):
 		if preview_node.HasCustomColor():
 			# Find the values for redness from the pack data and add them to the config payload
 			colour_config["red_config"] = get_colourable_config_values(preview_node)
+
+	# Apply Color Variants offsets to preview if toggle is active
+	if variants_active:
+		colour_config = _apply_preview_variant_to_config(colour_config, tool_type)
 
 	# Apply custom settings to the node
 	combinedshader.set_custom_attributes_on_node(preview_node, colour_config)
@@ -1492,38 +2294,156 @@ func on_gradient_values_changed(tool_type: String, location: String):
 # Function to refresh all walls if they have custom colours
 func refresh_colours_on_walls(level, delay: float = 0.0):
 
-	outputlog("refresh_colours_on_walls: delay: " + str(delay),0)	
-	
-	# Make a timer to
-	var timer = Timer.new()
-	timer.autostart = false
-	timer.one_shot = true
-	global.Editor.get_node("Windows").add_child(timer)
+	outputlog("refresh_colours_on_walls",2)
 
-	# Wait a couple of seconds to ensure everything has been drawn, the delay value has been set.
+	# If we need a delay then implement it
 	if delay > 0.0:
-		timer.start(delay)
-		yield(timer,"timeout")
+		yield(global.Editor.get_tree().create_timer(delay), "timeout")
 
-	var colour_config = {}
-	var node_id
+	# Re-apply wall colour data from stored mod data
+	customdatamanager.apply_custom_data_to_map(["walls"], 0.0)
 
-	# For each wall on this level
-	for wall in global.World.GetLevelByID(level.ID).Walls.get_children():
+# Stores tint data from all walls on the current level before a delete action
+# so we can propagate it to any new walls created by the deletion
+var _pre_delete_wall_tint = {}
 
-		node_id = wall.get_meta("node_id")
-		# If it has a colour then reapply it
-		if customdatamanager.has_data(node_id):
-			colour_config = customdatamanager.get_data(node_id)
-			set_tint_colour(int(node_id),colour_config["type"], colour_config, true)
+func capture_wall_tint_before_delete():
+	_pre_delete_wall_tint = {}
+	var level = global.World.GetCurrentLevel()
+	if level == null:
+		return
+	var walls_node = level.get_node_or_null("Walls")
+	if walls_node == null:
+		return
+	for i in range(walls_node.get_child_count()):
+		var wall = walls_node.get_child(i)
+		if not is_instance_valid(wall) or wall.get("Joint") == null or not wall.has_meta("node_id"):
+			continue
+		var wid = wall.get_meta("node_id")
+		if customdatamanager.has_data(wid):
+			_pre_delete_wall_tint[wid] = customdatamanager.get_data(wid).duplicate(true)
 
-	global.Editor.get_node("Windows").remove_child(timer)
-	timer.queue_free()
+func propagate_tint_to_orphaned_walls(delay: float = 0.08):
+	if _pre_delete_wall_tint.empty():
+		return
+
+	if delay > 0.0:
+		yield(global.Editor.get_tree().create_timer(delay), "timeout")
+
+	# Find the tint config to propagate (use the first one found - they're typically all the same)
+	var tint_to_propagate = null
+	for wid in _pre_delete_wall_tint:
+		tint_to_propagate = _pre_delete_wall_tint[wid]
+		break
+
+	if tint_to_propagate == null:
+		return
+
+	# Find all walls on the current level that have no mod data
+	var level = global.World.GetCurrentLevel()
+	if level == null:
+		return
+	var walls_node = level.get_node_or_null("Walls")
+	if walls_node == null:
+		return
+
+	var propagated = false
+	for i in range(walls_node.get_child_count()):
+		var wall = walls_node.get_child(i)
+		if not is_instance_valid(wall) or wall.get("Joint") == null or not wall.has_meta("node_id"):
+			continue
+		var wid = wall.get_meta("node_id")
+		# If this wall has no mod data, it's a new wall from the split
+		if not customdatamanager.has_data(wid):
+			outputlog("propagate_tint_to_orphaned_walls: propagating tint to new wall " + str(wid), 0)
+			set_tint_colour(wid, "walls", tint_to_propagate.duplicate(true), true)
+			propagated = true
+
+	if propagated:
+		refresh_colours_on_walls(level, 0.02)
+
+	_pre_delete_wall_tint = {}
+
+# Called after a wall edit ends (including splits). Propagates colour data to any new walls
+# that share joints with the edited wall but don't have mod data yet.
+func propagate_wall_data_after_edit(edited_wall: Node2D, delay: float = 0.05):
+
+	outputlog("propagate_wall_data_after_edit", 0)
+
+	if edited_wall == null or not is_instance_valid(edited_wall):
+		return
+	if not edited_wall.has_meta("node_id"):
+		return
+
+	var source_id = edited_wall.get_meta("node_id")
+
+	# Only propagate if the edited wall has mod data
+	if not customdatamanager.has_data(source_id):
+		return
+
+	var source_data = customdatamanager.get_data(source_id)
+	if not source_data.has("type") or source_data["type"] != "walls":
+		return
+
+	# Wait for DD to finish creating new wall segments
+	if delay > 0.0:
+		yield(global.Editor.get_tree().create_timer(delay), "timeout")
+
+	# Get the joints of the edited wall to find sibling walls
+	var edited_joints = []
+	if edited_wall.get("Joints") != null:
+		for joint in edited_wall.Joints:
+			if joint != null and is_instance_valid(joint):
+				edited_joints.append(joint)
+
+	# Look at each joint's connected walls
+	for joint in edited_joints:
+		if joint.get("Walls") != null:
+			for wall in joint.Walls:
+				if wall == null or not is_instance_valid(wall):
+					continue
+				if not wall.has_meta("node_id"):
+					continue
+				var wall_id = wall.get_meta("node_id")
+				if wall_id == source_id:
+					continue
+				# If this sibling wall has no mod data, propagate from the source
+				if not customdatamanager.has_data(wall_id):
+					outputlog("propagate_wall_data_after_edit: propagating from " + str(source_id) + " to " + str(wall_id), 0)
+					var new_config = source_data.duplicate(true)
+					set_tint_colour(wall_id, "walls", new_config, true)
+
+# Called when a new wall node appears (e.g. from a split). Looks at the new wall's joints
+# to find a sibling wall that has mod data and propagates it.
+func propagate_wall_data_to_new_wall(new_wall: Node2D, source_wall_id: int = -1):
+
+	outputlog("propagate_wall_data_to_new_wall: " + str(new_wall) + " source_id=" + str(source_wall_id), 0)
+
+	if new_wall == null or not is_instance_valid(new_wall):
+		return
+	if not new_wall.has_meta("node_id"):
+		return
+
+	var new_id = new_wall.get_meta("node_id")
+
+	# If the new wall already has mod data, nothing to do
+	if customdatamanager.has_data(new_id):
+		return
+
+	# Copy data from source wall if known and has tint data
+	if source_wall_id >= 0 and customdatamanager.has_data(source_wall_id):
+		var sdata = customdatamanager.get_data(source_wall_id)
+		if sdata.has("type") and sdata["type"] == "walls":
+			set_tint_colour(new_id, "walls", sdata.duplicate(true), true)
+			yield(global.Editor.get_tree().create_timer(0.02), "timeout")
+			if new_wall != null and is_instance_valid(new_wall):
+				refresh_colours_on_walls(global.World.GetCurrentLevel(), 0.0)
 
 # When a DD custom colour control changes the colour
 func on_dd_custom_color_control_changed(_ignore_this, _ignore_this_too, tool_type: String, location: String):
 
 	outputlog("on_dd_custom_color_control_changed",2)
+	_begin_change("custom_color")
 
 	var ui_element = ui_config[tool_type][location]
 
@@ -1535,15 +2455,23 @@ func on_dd_custom_color_control_changed(_ignore_this, _ignore_this_too, tool_typ
 	# For some tool types, this should drive a reset
 	match tool_type:
 		"ObjectTool","ScatterTool","PathTool":
-			# Hit the reset function
-			_on_reset_button_pressed(tool_type, location)
-			if location == "select":
-				set_object_library_grid_custom_colour_to_dd_palette_colour(tool_type, location)
+			# Don't reset if we're in saturation mode - just update the selection
+			if colour_config.has("shader_type") and colour_config["shader_type"] == "saturation":
+				if location == "select":
+					set_colour_of_selection(tool_type, false)
+					create_update_custom_history(null, tool_type, location, 0.0)
+			else:
+				# Hit the reset function
+				_on_reset_button_pressed(tool_type, location)
+				if location == "select":
+					set_object_library_grid_custom_colour_to_dd_palette_colour(tool_type, location)
+					create_update_custom_history(null, tool_type, location, 0.0)
 
 		# For wall and patternshape tools, we want to update the image as this is the core colour value (if for some reason we want to tint the gradient)
 		"WallTool","PatternShapeTool":
 			if location == "select":
 				set_colour_of_selection(tool_type, false)
+				create_update_custom_history(null, tool_type, location, 0.0)
 
 # Function to respond to when a gradient colour picker is opened or closed
 func on_gradient_colour_picker_activated(is_activated: bool, tool_type: String, _location: String):
@@ -1563,6 +2491,7 @@ func on_gradient_colour_picker_activated(is_activated: bool, tool_type: String, 
 func _on_levels_default_button_pressed(button_pressed: bool, tool_type: String, location: String):
 
 	outputlog("_on_levels_default_button_pressed",2)
+	_begin_change("levels_default")
 
 	# Don't change anything if the button is not pressed, this simply keeps the UI as the current version
 	if not button_pressed:
@@ -1583,6 +2512,7 @@ func _on_levels_default_button_pressed(button_pressed: bool, tool_type: String, 
 func _on_levels_slider_value_changed(_value: float, tool_type: String, location: String):
 
 	outputlog("_on_levels_slider_value_changed",3)
+	_begin_change("levels")
 
 	# Change the default button status to unchecked
 	if ui_config[tool_type][location].has("levels_default_button"):
@@ -1607,6 +2537,7 @@ func _on_levels_slider_value_changed(_value: float, tool_type: String, location:
 func _on_saturation_slider_value_changed(_value: float, tool_type: String, location: String):
 
 	outputlog("_on_saturation_slider_value_changed",3)
+	_begin_change("saturation")
 
 	# Update the stored ui config
 	refresh_combined_ui_stored_state(tool_type, location)
@@ -1630,6 +2561,7 @@ func _on_hue_slider_value_changed(_value: float, tool_type: String, location: St
 
 # Deferred function to apply hue change after slider value is synchronized
 func _apply_hue_change(tool_type: String, location: String):
+	_begin_change("hue")
 
 	# Update the stored ui config
 	refresh_combined_ui_stored_state(tool_type, location)
@@ -1647,6 +2579,7 @@ func _apply_hue_change(tool_type: String, location: String):
 func _on_sat_levels_slider_value_changed(_value: float, tool_type: String, location: String):
 
 	outputlog("_on_sat_levels_slider_value_changed",3)
+	_begin_change("sat_levels")
 
 	# Update the stored ui config
 	refresh_combined_ui_stored_state(tool_type, location)
@@ -1664,6 +2597,7 @@ func _on_sat_levels_slider_value_changed(_value: float, tool_type: String, locat
 func _on_lightness_slider_value_changed(_value: float, tool_type: String, location: String):
 
 	outputlog("_on_lightness_slider_value_changed",3)
+	_begin_change("lightness")
 
 	# Use call_deferred to ensure the slider value is fully updated before processing
 	call_deferred("_apply_lightness_change", tool_type, location)
@@ -1687,6 +2621,7 @@ func _apply_lightness_change(tool_type: String, location: String):
 func _on_contrast_slider_value_changed(_value: float, tool_type: String, location: String):
 
 	outputlog("_on_contrast_slider_value_changed",3)
+	_begin_change("contrast")
 
 	# Use call_deferred to ensure the slider value is fully updated before processing
 	call_deferred("_apply_contrast_change", tool_type, location)
@@ -1710,6 +2645,7 @@ func _apply_contrast_change(tool_type: String, location: String):
 func _on_invert_button_toggled(pressed: bool, tool_type: String, location: String):
 
 	outputlog("_on_invert_button_toggled",3)
+	_begin_change("invert")
 
 	# Update the stored ui config
 	refresh_combined_ui_stored_state(tool_type, location)
@@ -1721,6 +2657,23 @@ func _on_invert_button_toggled(pressed: bool, tool_type: String, location: Strin
 			create_update_custom_history(null, tool_type, location, 0.0)
 	
 		# If we are in the main location and the preview button is enabled then update the preview
+		"main":
+			set_preview_colour(tool_type, false)
+
+# Function called when any colorable protection checkbox is toggled
+func _on_colorable_protect_toggled(pressed: bool, tool_type: String, location: String):
+
+	outputlog("_on_colorable_protect_toggled",3)
+	_begin_change("colorable_protect")
+
+	# Update the stored ui config
+	refresh_combined_ui_stored_state(tool_type, location)
+
+	# Only make an active change if there is something selected
+	match location:
+		"select":
+			set_colour_of_selection(tool_type, false)
+			create_update_custom_history(null, tool_type, location, 0.0)
 		"main":
 			set_preview_colour(tool_type, false)
 
@@ -1996,6 +2949,15 @@ func set_ui_visibilty_from_colour_options_change(button_pressed: bool, source_sh
 	ui_element["sat_midtones_slider"].hbox.visible = (source_shader_type == "saturation" && button_pressed)
 	ui_element["sat_output_levels_hbox"].visible = (source_shader_type == "saturation" && button_pressed)
 
+	# Show colorable protection checkboxes only when saturation mode is on AND a colorable asset is selected
+	var show_colorable_protect = (source_shader_type == "saturation" && button_pressed)
+	if show_colorable_protect and location == "select":
+		show_colorable_protect = is_selection_colorable(tool_type)
+	elif show_colorable_protect and location == "main":
+		# In main mode, show if the current object in the library is colorable
+		show_colorable_protect = _is_current_main_object_colorable(tool_type)
+	ui_element["colorable_protect_hbox"].visible = show_colorable_protect
+
 	if source_shader_type == "gradient" && button_pressed:
 		ui_config["gradient_map"].show()
 	else:
@@ -2006,6 +2968,7 @@ func set_ui_visibilty_from_colour_options_change(button_pressed: bool, source_sh
 
 # Function to call when one of the colour options is selected
 func _on_colour_option_button_pressed(button_pressed: bool, source_shader_type: String, tool_type: String, location: String, update_selection: bool):
+	_begin_change("shader_mode_" + source_shader_type)
 
 	outputlog("_on_colour_option_button_pressed",2)
 	outputlog("source_shader_type: " + str(source_shader_type),2)
@@ -2071,19 +3034,30 @@ func _on_tintcolour_ui_changed(_ignore_this, tool_type: String, location: String
 
 # Function called when the opacity slider changes
 func _on_opacity_slider_ui_changed(_ignore_this, tool_type: String, location: String):
+	_begin_change("opacity")
 
-	# Update the tint colour
-	var color = ui_config[tool_type][location]["palette"].color
-	color.a = ui_config[tool_type][location]["opacity_slider"].value
-	ui_config[tool_type][location]["palette"].SetColor(color,false)
+	# Update the tint colour only for tools with a palette
+	if ui_config[tool_type][location]["palette"] != null:
+		var color = ui_config[tool_type][location]["palette"].color
+		color.a = ui_config[tool_type][location]["opacity_slider"].value
+		ui_config[tool_type][location]["palette"].SetColor(color,false)
 
-	# Call the function to act on the new change
-	_on_tintcolour_changed(null, tool_type, location)
+	# Update the stored ui config
+	refresh_combined_ui_stored_state(tool_type, location)
+
+	# Apply to selection if in select mode
+	if location == "select":
+		set_colour_of_selection(tool_type, false)
+	
+	# Update preview in main mode
+	if location == "main":
+		set_preview_colour(tool_type, false)
 
 # Function called when a colour palette value is changed. Note this only has an immediate action if this is the select tool and something is selected.
 func _on_tintcolour_changed(_ignore_this, tool_type: String, location: String):
 
 	outputlog("_on_tintcolour_changed",2)
+	_begin_change("tint_colour")
 
 	# Update the stored ui config
 	refresh_combined_ui_stored_state(tool_type, location)
@@ -2153,7 +3127,7 @@ func set_tint_colour_on_placed_nodes(tool_type: String):
 		if global.World.HasNodeID(node_id):
 			# Get the node itself
 			node = global.World.GetNodeByID(node_id)
-			if node != null:
+			if node != null and is_instance_valid(node):
 				# Call the set tint colour function. Noting this is structured this way as post v1.2.0.0 we will call this function directly
 				set_tint_colour_on_new_node(node)
 
@@ -2162,8 +3136,8 @@ func set_tint_colour_on_new_node(node: Node2D):
 
 	outputlog("set_tint_colour_on_new_node: " + str(node),2)
 
-	if node == null:
-		outputlog("node is null",2)
+	if node == null or not is_instance_valid(node):
+		outputlog("node is null or freed",2)
 		return
 	
 	var node_id
@@ -2175,6 +3149,15 @@ func set_tint_colour_on_new_node(node: Node2D):
 
 	# Get the tool type from the active tool name
 	var tool_type = global.Editor.ActiveToolName
+
+	# Walls are fully disabled from the mod
+	if tool_type == "WallTool":
+		return
+
+	# Guard: tool_type must be in TYPE_LOOKUP (e.g. SelectTool is not)
+	if not TYPE_LOOKUP.has(tool_type):
+		return
+
 	# Check the node type actually matches the active tool name type. Noting that there are some mods that create assets while in other tools
 	if TYPE_LOOKUP[tool_type] != get_node_type(node):
 		outputlog("node type does not match tool_type: node type: " + str(get_node_type(node)) + " tool_type: " + str(tool_type),2)
@@ -2191,6 +3174,16 @@ func set_tint_colour_on_new_node(node: Node2D):
 	if tool_type == "ScatterTool" && store_preview_config.has("colour"):
 		colour_config["colour"] = store_preview_config["colour"]
 
+	# If Color Variants toggle is active, save current offsets for the placed node and generate new ones for the next preview
+	var _saved_variant_offsets = {}
+	if tool_type in ["ObjectTool", "ScatterTool"]:
+		if ui_element.has("natural_variants_button"):
+			if ui_element["natural_variants_button"].pressed:
+				# Save the current offsets (these will be applied to the node we're about to place)
+				_saved_variant_offsets = _preview_variant_offsets.duplicate(true)
+				# Flag that the next set_preview_colour should regenerate offsets
+				_preview_asset_changed = true
+
 	# If in the objects tool type
 	match tool_type:
 		"ObjectTool","ScatterTool":
@@ -2203,6 +3196,17 @@ func set_tint_colour_on_new_node(node: Node2D):
 	
 	# Set the tint colour for the new node. Noting this should be redundant if the preview is active
 	set_tint_colour(node_id,TYPE_LOOKUP[tool_type], colour_config, false)
+
+	# Apply the saved variant offsets to the placed node (same offsets that were shown in preview)
+	if not _saved_variant_offsets.empty():
+		var placed_node_data = customdatamanager.get_data_or_default(node_id)
+		placed_node_data["type"] = TYPE_LOOKUP[tool_type]
+		# Temporarily swap in the saved offsets
+		var _current_offsets = _preview_variant_offsets
+		_preview_variant_offsets = _saved_variant_offsets
+		placed_node_data = _apply_preview_variant_to_config(placed_node_data, tool_type)
+		_preview_variant_offsets = _current_offsets
+		set_tint_colour(node_id, TYPE_LOOKUP[tool_type], placed_node_data, false)
 	
 	# Custom Colours seem to be set inconsistently, so this just reviews and checks that the custom color is valid
 	if is_object_tool_type(node):
@@ -2295,6 +3299,7 @@ func touch_custom_color_palette(tool_type: String, location: String):
 func create_update_custom_history(_ignore_this, _tool_type: String, _location: String, delay_secs: float):
 
 	combinedshader.create_update_custom_history(delay_secs)
+	_current_change_source = ""
 
 #########################################################################################################
 ##
@@ -2330,6 +3335,8 @@ func initialise() -> void:
 	for location in ["main","select"]:
 		for tool_type in BUILD_THESE_TOOLS:
 			if tool_type == "ScatterTool" && location == "select":
+				continue
+			if tool_type == "WallTool" && location == "main":
 				continue
 			make_overridecolour_ui(tool_type,location)
 

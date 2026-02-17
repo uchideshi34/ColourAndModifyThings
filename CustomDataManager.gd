@@ -110,7 +110,7 @@ func merge_array(array_1: Array, array_2: Array) -> Array:
 # Function to look at a node and determine what type it is based on its properties
 func get_node_type(node):
 
-	if node == null: return null
+	if node == null or not is_instance_valid(node): return null
 
 	if node.get("WallID") != null:
 		return "portals"
@@ -485,7 +485,7 @@ func is_data_default(config_data, ignore_colour: bool = false):
 		return false
 	
 	if config_data.has("fade_distance") && config_data["type"] == "paths":
-		if not is_equal_approx(config_data["fade_distance"],10):
+		if not is_equal_approx(config_data["fade_distance"],0.1):
 			return false
 	
 	return true
@@ -680,7 +680,7 @@ func apply_custom_data_to_pasted_nodes():
 
 	outputlog("apply_custom_data_to_pasted_nodes", 1)
 	var node
-	var list = {"objects": [], "paths": [], "portals": [], "pattern_shapes": []}
+	var list = {"objects": [], "paths": [], "portals": [], "pattern_shapes": [], "walls": []}
 	var new_node_id
 
 	# If the stored copy data is the same as the data held in the clipboard then the store is valid
@@ -707,8 +707,9 @@ func apply_custom_data_to_pasted_nodes():
 			node = global.World.GetNodeByID(node_id)
 			if node != null:
 				# Determine what type of node it is and add the id to the right list
-				if get_node_type(node) != null:
-					list[get_node_type(node)].append(node_id)
+				var ntype = get_node_type(node)
+				if ntype != null and list.has(ntype):
+					list[ntype].append(node_id)
 
 		outputlog(JSON.print(list,'\t',2))
 		outputlog(JSON.print(copied_data_store,'\t',2))
@@ -741,7 +742,7 @@ func store_copy_data():
 
 	var type
 	var data = {}
-	var count = {"objects": 0, "paths": 0, "portals": 0, "pattern_shapes": 0}
+	var count = {"objects": 0, "paths": 0, "portals": 0, "pattern_shapes": 0, "walls": 0}
 	var selectable_type
 
 	# If there is nothing to copy then return
@@ -752,6 +753,7 @@ func store_copy_data():
 	copied_data_store["paths"] = []
 	copied_data_store["pattern_shapes"] = []
 	copied_data_store["portals"] = []
+	copied_data_store["walls"] = []
 
 	copied_data_store["raw"] = JSON.parse(global.Editor.Tools["SelectTool"].Serialize(true)).result
 
@@ -761,15 +763,20 @@ func store_copy_data():
 		# Get the selectable type
 		selectable_type = global.Editor.Tools["SelectTool"].GetSelectableType(selected_node)
 		outputlog("selectable_type: " + str(selectable_type),2)
-		outputlog("TOOL_TYPE_LOOKUP_BY_SELECTABLE[selectable_type]: " + str(TOOL_TYPE_LOOKUP_BY_SELECTABLE[str(selectable_type)]),2)
-		outputlog("type: " + str(TYPE_LOOKUP[TOOL_TYPE_LOOKUP_BY_SELECTABLE[str(selectable_type)]]),2)
-		# 2nd order lookup to get the type
-		if TYPE_LOOKUP[TOOL_TYPE_LOOKUP_BY_SELECTABLE[str(selectable_type)]]:
-			type = TYPE_LOOKUP[TOOL_TYPE_LOOKUP_BY_SELECTABLE[str(selectable_type)]]
-		else:
+		# Guard: skip unknown selectable types (e.g. 0 for partially constructed nodes)
+		if not TOOL_TYPE_LOOKUP_BY_SELECTABLE.has(str(selectable_type)):
 			continue
+		var tool_key = TOOL_TYPE_LOOKUP_BY_SELECTABLE[str(selectable_type)]
+		if not TYPE_LOOKUP.has(tool_key):
+			continue
+		outputlog("TOOL_TYPE_LOOKUP_BY_SELECTABLE[selectable_type]: " + str(tool_key),2)
+		outputlog("type: " + str(TYPE_LOOKUP[tool_key]),2)
+		# 2nd order lookup to get the type
+		type = TYPE_LOOKUP[tool_key]
 		
 		# Look for any stored data or simply use default data, if this does not have custom data
+		if not selected_node.has_meta("node_id"):
+			continue
 		if has_data(selected_node.get_meta("node_id")):
 			data = get_data(selected_node.get_meta("node_id")).duplicate(true)
 		else:

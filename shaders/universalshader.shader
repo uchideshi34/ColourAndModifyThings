@@ -1,4 +1,4 @@
-shader_type canvas_item; // version 1.0.2
+shader_type canvas_item; // version 1.0.3
 
 uniform float min_gray = 0.0; // Adjusts the darkest level
 uniform float max_gray = 1.0; // Ensures brightest point is white
@@ -15,6 +15,9 @@ uniform float sat_out_blacks = 0.0; // output black level (0.0 to 1.0) - black p
 uniform float sat_out_whites = 1.0; // output white level (0.0 to 1.0) - white pixels become this value
 uniform bool apply_saturation = false; // Boolean to determine if we should try and apply a saturation change
 
+uniform vec4 base_color = vec4(1.0, 1.0, 1.0, 1.0); // Base color for patterns (their original DD custom color)
+uniform bool apply_base_color = false; // Whether to apply base_color tinting
+
 uniform sampler2D gradient_tex; // Holds the gradient
 uniform bool apply_gradient = false; // Defines whether this is a gradient or not
 
@@ -28,6 +31,11 @@ uniform bool is_colourable = false; // If the asset has defined colourable pixel
 uniform float min_redness = 0.1; // values from asset packs
 uniform float red_tolerance = 0.04; // values from asset packs
 uniform float min_saturation = 0.0; // values from asset packs
+
+// Colorable protection: when true, the corresponding HSL adjustment skips colorable pixels
+uniform bool protect_hue = true;
+uniform bool protect_sat = true;
+uniform bool protect_light = true;
 
 uniform bool is_path = false; // boolean for whether this applies to a path
 uniform float start_point = 0.0; // Adjusts the start_point
@@ -274,8 +282,78 @@ void fragment()
 		}
 
 	}
-
-	if ((!is_colourable || (is_colourable && is_red_enough(color))) && apply_grayscale)  // If this is either not a colourable asset (in which case we recolour the whole thing) or if it is and the pixel qualifies as being colourable
+	// For colorable assets with base_color: apply base_color only to red pixels, HSL controlled by protect checkboxes
+	if (is_colourable && apply_base_color && apply_grayscale && apply_saturation) {
+		float gray = dot(color.rgb, vec3(0.299, 0.587, 0.114));
+		vec3 saturation_color;
+		bool is_colorable_pixel = is_red_enough(color);
+		
+		if (is_colorable_pixel) {
+			// This is a colorable (red) pixel - apply base_color tinting
+			gray = color.r;
+			gray = clamp((gray - min_gray) / (max_gray - min_gray), 0.0, 1.0);
+			
+			vec3 base_hsv = rgb2hsv(base_color.rgb);
+			// Apply saturation slider only if not protected for colorable pixels
+			float final_saturation;
+			if (protect_sat) {
+				final_saturation = base_hsv.y;
+			} else {
+				final_saturation = base_hsv.y * saturation;
+			}
+			float final_value = gray * base_hsv.z;
+			vec3 result_hsv = vec3(base_hsv.x, final_saturation, final_value);
+			saturation_color = hsv2rgb(result_hsv);
+		} else {
+			// Non-red pixel - keep original color but apply HSL adjustments
+			gray = clamp((gray - min_gray) / (max_gray - min_gray), 0.0, 1.0);
+			saturation_color = mix(vec3(gray), color.rgb, saturation);
+		}
+		
+		// Apply hue shift - skip colorable pixels if protect_hue is enabled
+		if (!(is_colorable_pixel && protect_hue) && abs(hue_shift) > 0.001) {
+			vec3 hsv = rgb2hsv(saturation_color);
+			hsv.x = fract(hsv.x + hue_shift * 0.5);
+			saturation_color = hsv2rgb(hsv);
+		}
+		
+		// Apply lightness - skip colorable pixels if protect_light is enabled
+		if (!(is_colorable_pixel && protect_light) && abs(lightness) > 0.001) {
+			if (lightness > 0.0) {
+				saturation_color = mix(saturation_color, vec3(1.0), lightness);
+			} else {
+				saturation_color = mix(saturation_color, vec3(0.0), -lightness);
+			}
+		}
+		
+		// Apply contrast (to all pixels - not covered by protection)
+		if (abs(contrast) > 0.001) {
+			if (contrast > 0.0) {
+				float contrast_factor = 1.0 + contrast * 2.0;
+				saturation_color = clamp((saturation_color - vec3(0.5)) * contrast_factor + vec3(0.5), 0.0, 1.0);
+			} else {
+				saturation_color = mix(saturation_color, vec3(0.5), -contrast);
+			}
+		}
+		
+		// Apply Input Levels (to all pixels)
+		float range = max(sat_whites - sat_blacks, 0.001);
+		saturation_color = clamp((saturation_color - vec3(sat_blacks)) / range, 0.0, 1.0);
+		
+		// Apply gamma (to all pixels)
+		saturation_color = pow(saturation_color, vec3(1.0 / sat_midtones));
+		
+		// Apply Output Levels (to all pixels)
+		saturation_color = mix(vec3(sat_out_blacks), vec3(sat_out_whites), saturation_color);
+		
+		// Apply invert if enabled (to all pixels)
+		if (invert) {
+			saturation_color = vec3(1.0) - saturation_color;
+		}
+		
+		COLOR = vec4(saturation_color, color.a);
+	}
+	else if ((!is_colourable || (is_colourable && is_red_enough(color))) && apply_grayscale)  // Original logic for non-colorable or colorable without base_color
 	{
 
 		float gray = dot(color.rgb, vec3(0.299, 0.587, 0.114)); // Convert the color to grayscale
@@ -301,7 +379,32 @@ void fragment()
 			{
 				// Normalize grayscale to fit within min_gray and max_gray
 				gray = clamp((gray - min_gray) / (max_gray - min_gray), 0.0, 1.0);
-				vec3 saturation_color = mix(vec3(gray), color.rgb, saturation);
+				
+				vec3 saturation_color;
+				if (apply_base_color) {
+					// For patterns with base_color:
+					// We want to colorize the grayscale texture with base_color
+					// The gray value represents the brightness variation in the texture
+					// base_color provides the hue and target saturation
+					
+					vec3 base_hsv = rgb2hsv(base_color.rgb);
+					
+					// Create the tinted color:
+					// - Hue from base_color
+					// - Saturation from base_color, scaled by the saturation slider
+					// - Value/brightness: combine texture gray with base_color brightness
+					//   When gray=1 (white in texture), show base_color
+					//   When gray=0 (black in texture), show black
+					float final_saturation = base_hsv.y * saturation;
+					float final_value = gray * base_hsv.z;
+					
+					vec3 result_hsv = vec3(base_hsv.x, final_saturation, final_value);
+					saturation_color = hsv2rgb(result_hsv);
+				} else {
+					// Standard behavior: mix between grayscale and original color
+					saturation_color = mix(vec3(gray), color.rgb, saturation);
+				}
+				
 				
 				// Apply hue shift if non-zero
 				if (abs(hue_shift) > 0.001) {
@@ -324,8 +427,6 @@ void fragment()
 				// Apply contrast adjustment if non-zero
 				if (abs(contrast) > 0.001) {
 					// Contrast formula using power curve for smoother effect
-					// When contrast > 0: increases contrast
-					// When contrast < 0: decreases contrast (blend toward gray)
 					if (contrast > 0.0) {
 						// Increase contrast: use power curve (values move away from 0.5)
 						float contrast_factor = 1.0 + contrast * 2.0;
@@ -334,11 +435,6 @@ void fragment()
 						// Decrease contrast: blend toward middle gray (0.5)
 						saturation_color = mix(saturation_color, vec3(0.5), -contrast);
 					}
-				}
-				
-				// Apply invert (negative) if enabled
-				if (invert) {
-					saturation_color = vec3(1.0) - saturation_color;
 				}
 				
 				// Apply Input Levels adjustment (like Photoshop)
@@ -354,6 +450,11 @@ void fragment()
 				// Apply Output Levels adjustment (like Photoshop)
 				// Remap from [0, 1] to [sat_out_blacks, sat_out_whites]
 				saturation_color = mix(vec3(sat_out_blacks), vec3(sat_out_whites), saturation_color);
+				
+				// Apply invert (negative) if enabled - AFTER all other adjustments
+				if (invert) {
+					saturation_color = vec3(1.0) - saturation_color;
+				}
 				
 				COLOR = vec4(saturation_color, color.a);
 				
