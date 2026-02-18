@@ -2204,7 +2204,8 @@ func set_preview_colour(tool_type: String, force_change: bool):
 	if tool_type == "ScatterTool":
 		colour = get_random_colour_from_colour_palette(ui_config["ScatterTool"]["main"]["palette"])
 	else:
-		colour = ui_element["palette"].color
+		# Use colorPicker.color as palette.color may lag behind when using the eyedropper
+		colour = ui_element["palette"].colorPicker.color
 	colour_config["colour"] = colour.to_html()
 
 	# For normalised mode, where the default brightness is enabled
@@ -3070,9 +3071,10 @@ func _on_tintcolour_changed(_ignore_this, tool_type: String, location: String):
 		set_preview_colour(tool_type, false)
 
 	# If this is an object tool type, the update the object library to the palette colour
+	# Use call_deferred to ensure this runs AFTER DD's internal color processing
 	if is_object_tool_type(tool_type):
 		# Reset back to the custom colour
-		set_object_library_grid_custom_colour_to_dd_palette_colour(tool_type, location)
+		call_deferred("set_object_library_grid_custom_colour_to_dd_palette_colour", tool_type, location)
 
 	# Check that this is just for the select tool
 	if location == "select":
