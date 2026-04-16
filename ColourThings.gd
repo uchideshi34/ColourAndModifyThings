@@ -2304,116 +2304,6 @@ func refresh_colours_on_walls(level, delay: float = 0.0):
 	# Re-apply wall colour data from stored mod data
 	customdatamanager.apply_custom_data_to_map(["walls"], 0.0)
 
-# Stores tint data from all walls on the current level before a delete action
-# so we can propagate it to any new walls created by the deletion
-var _pre_delete_wall_tint = {}
-
-func capture_wall_tint_before_delete():
-	_pre_delete_wall_tint = {}
-	var level = global.World.GetCurrentLevel()
-	if level == null:
-		return
-	var walls_node = level.get_node_or_null("Walls")
-	if walls_node == null:
-		return
-	for i in range(walls_node.get_child_count()):
-		var wall = walls_node.get_child(i)
-		if not is_instance_valid(wall) or wall.get("Joint") == null or not wall.has_meta("node_id"):
-			continue
-		var wid = wall.get_meta("node_id")
-		if customdatamanager.has_data(wid):
-			_pre_delete_wall_tint[wid] = customdatamanager.get_data(wid).duplicate(true)
-
-func propagate_tint_to_orphaned_walls(delay: float = 0.08):
-	if _pre_delete_wall_tint.empty():
-		return
-
-	if delay > 0.0:
-		yield(global.Editor.get_tree().create_timer(delay), "timeout")
-
-	# Find the tint config to propagate (use the first one found - they're typically all the same)
-	var tint_to_propagate = null
-	for wid in _pre_delete_wall_tint:
-		tint_to_propagate = _pre_delete_wall_tint[wid]
-		break
-
-	if tint_to_propagate == null:
-		return
-
-	# Find all walls on the current level that have no mod data
-	var level = global.World.GetCurrentLevel()
-	if level == null:
-		return
-	var walls_node = level.get_node_or_null("Walls")
-	if walls_node == null:
-		return
-
-	var propagated = false
-	for i in range(walls_node.get_child_count()):
-		var wall = walls_node.get_child(i)
-		if not is_instance_valid(wall) or wall.get("Joint") == null or not wall.has_meta("node_id"):
-			continue
-		var wid = wall.get_meta("node_id")
-		# If this wall has no mod data, it's a new wall from the split
-		if not customdatamanager.has_data(wid):
-			outputlog("propagate_tint_to_orphaned_walls: propagating tint to new wall " + str(wid), 0)
-			set_tint_colour(wid, "walls", tint_to_propagate.duplicate(true), true)
-			propagated = true
-
-	if propagated:
-		refresh_colours_on_walls(level, 0.02)
-
-	_pre_delete_wall_tint = {}
-
-# Called after a wall edit ends (including splits). Propagates colour data to any new walls
-# that share joints with the edited wall but don't have mod data yet.
-func propagate_wall_data_after_edit(edited_wall: Node2D, delay: float = 0.05):
-
-	outputlog("propagate_wall_data_after_edit", 0)
-
-	if edited_wall == null or not is_instance_valid(edited_wall):
-		return
-	if not edited_wall.has_meta("node_id"):
-		return
-
-	var source_id = edited_wall.get_meta("node_id")
-
-	# Only propagate if the edited wall has mod data
-	if not customdatamanager.has_data(source_id):
-		return
-
-	var source_data = customdatamanager.get_data(source_id)
-	if not source_data.has("type") or source_data["type"] != "walls":
-		return
-
-	# Wait for DD to finish creating new wall segments
-	if delay > 0.0:
-		yield(global.Editor.get_tree().create_timer(delay), "timeout")
-
-	# Get the joints of the edited wall to find sibling walls
-	var edited_joints = []
-	if edited_wall.get("Joints") != null:
-		for joint in edited_wall.Joints:
-			if joint != null and is_instance_valid(joint):
-				edited_joints.append(joint)
-
-	# Look at each joint's connected walls
-	for joint in edited_joints:
-		if joint.get("Walls") != null:
-			for wall in joint.Walls:
-				if wall == null or not is_instance_valid(wall):
-					continue
-				if not wall.has_meta("node_id"):
-					continue
-				var wall_id = wall.get_meta("node_id")
-				if wall_id == source_id:
-					continue
-				# If this sibling wall has no mod data, propagate from the source
-				if not customdatamanager.has_data(wall_id):
-					outputlog("propagate_wall_data_after_edit: propagating from " + str(source_id) + " to " + str(wall_id), 0)
-					var new_config = source_data.duplicate(true)
-					set_tint_colour(wall_id, "walls", new_config, true)
-
 # Called when a new wall node appears (e.g. from a split). Looks at the new wall's joints
 # to find a sibling wall that has mod data and propagates it.
 func propagate_wall_data_to_new_wall(new_wall: Node2D, source_wall_id: int = -1):
@@ -3152,10 +3042,6 @@ func set_tint_colour_on_new_node(node: Node2D):
 	# Get the tool type from the active tool name
 	var tool_type = global.Editor.ActiveToolName
 
-	# Walls are fully disabled from the mod
-	if tool_type == "WallTool":
-		return
-
 	# Guard: tool_type must be in TYPE_LOOKUP (e.g. SelectTool is not)
 	if not TYPE_LOOKUP.has(tool_type):
 		return
@@ -3337,8 +3223,6 @@ func initialise() -> void:
 	for location in ["main","select"]:
 		for tool_type in BUILD_THESE_TOOLS:
 			if tool_type == "ScatterTool" && location == "select":
-				continue
-			if tool_type == "WallTool" && location == "main":
 				continue
 			make_overridecolour_ui(tool_type,location)
 

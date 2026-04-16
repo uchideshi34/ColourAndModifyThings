@@ -1064,9 +1064,6 @@ func on_signal_from_wall_tool(node: Node2D, signal_name: String):
 		"OnEndEditWall":
 			# Refresh the edited node
 			combinedshader.refresh_node(node)
-			# Also refresh all walls after a short delay to catch wall splits
-			# (DD may create new wall segments from the split)
-			colourthings.propagate_wall_data_after_edit(node, 0.05)
 
 		"OnStartWall", "OnEndWall":
 			pass
@@ -1141,7 +1138,7 @@ func on_new_node_added_to_world(node):
 		return
 
 	# Wall split detection: when a new wall appears, propagate tint data from the source wall
-	if get_node_type(node) == "walls":
+	if get_node_type(node) == "walls" && Global.Editor.Tools["WallTool"].get_EditPoints().pressed && Global.Editor.ActiveToolName == "WallTool":
 		if node.has_meta("node_id"):
 			var new_id = node.get_meta("node_id")
 			var source_wall_id = -1
@@ -1166,9 +1163,6 @@ func on_new_node_added_to_world(node):
 				source_wall_id = _find_split_source_wall(new_id)
 
 			colourthings.propagate_wall_data_to_new_wall(node, source_wall_id)
-		return
-
-	if Global.Editor.ActiveToolName == "WallTool":
 		return
 
 	if Global.Editor.ActiveToolName in BUILD_THESE_TOOLS:
@@ -1354,14 +1348,8 @@ func on_unhandled_key_event(event):
 			# Capture a copy event from the key presses
 			if Input.is_action_just_pressed("copy_keys_pressed"):
 				customdatamanager.store_copy_data()
-			# Detect delete key to refresh walls after portal/wall deletion
-			if event is InputEventKey and event.pressed and event.scancode == KEY_DELETE:
-				# Before DD deletes: capture tint data from selected walls so we can
-				# propagate it to any new walls that DD creates from the deletion
-				colourthings.capture_wall_tint_before_delete()
-				colourthings.refresh_colours_on_walls(Global.World.GetCurrentLevel(), 0.02)
-				# After DD has processed the delete: propagate tint to orphaned new walls
-				colourthings.propagate_tint_to_orphaned_walls(0.08)
+			# Note we are taking wall snap shots so we don't need to look for delete events for walls
+			
 
 	# Detect undo/redo (Ctrl+Z / Ctrl+Y / Ctrl+Shift+Z) to refresh walls
 	if event is InputEventKey and event.pressed and event.control:

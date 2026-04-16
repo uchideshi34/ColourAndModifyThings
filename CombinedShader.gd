@@ -14,7 +14,7 @@ var history_record = {"has_data": false, "previous_node_data": {}, "new_node_dat
 const TYPE_LOOKUP = {"ObjectTool": "objects","ScatterTool": "objects", "PathTool": "paths", "PatternShapeTool": "pattern_shapes", "WallTool": "walls", "PortalTool": "portals"}
 
 # Logging Functions
-const ENABLE_LOGGING = false
+const ENABLE_LOGGING = true
 var logging_level = 0
 
 #########################################################################################################
