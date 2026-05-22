@@ -2338,6 +2338,10 @@ func on_dd_custom_color_control_changed(_ignore_this, _ignore_this_too, tool_typ
 
 	var ui_element = ui_config[tool_type][location]
 
+	# Propagate any alpha change to the opacity slider
+	if ui_element.has("custom_color_button"):
+		ui_element["opacity_slider"].set_value(ui_element["custom_color_button"].color.a, true)
+
 	# Update the stored ui config
 	refresh_combined_ui_stored_state(tool_type, location)
 

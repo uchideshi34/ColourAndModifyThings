@@ -589,9 +589,6 @@ func set_custom_modulate(node: Node2D, config: Dictionary, apply_shader: bool):
 					node.set_modulate(pattern_color)
 			# If we are relying on the default DD pattern shader then it takes the colour value into that shader so we want the modulate as white but preserve opacity
 			else:
-				var mod_color = Color.white
-				mod_color.a = opacity
-				node.set_modulate(mod_color)
 				# DD should take care of this but the timing may not work, so force it
 				var pattern_color = base_color
 				pattern_color.a = opacity

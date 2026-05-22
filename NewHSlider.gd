@@ -1,4 +1,3 @@
-class_name NewHSlider
 
 var script_class = "tool"
 
@@ -8,6 +7,8 @@ var hbox: HBoxContainer
 var timer: Timer
 var slider_wait_time = 1.0
 var value = 0.0
+var icon: TextureRect
+var label: Label
 
 signal emit_history_event_signal
 signal value_changed
@@ -134,3 +135,40 @@ func start_slider_timer(value: float = -1.0):
 		timer.start(slider_wait_time)
 	else:
 		timer.start(value)
+	
+func add_icon(texture: Texture, index: int = 0):
+
+	icon = TextureRect.new()
+	icon.texture = texture
+	self.hbox.add_child(icon)
+	self.hbox.move_child(icon,index)
+
+func add_label(text: String, index: int = 0):
+
+	label = Label.new()
+	label.text = text
+	self.hbox.add_child(label)
+	self.hbox.move_child(label, index)
+
+func show():
+
+	self.hbox.visible = true
+
+func hide():
+
+	self.hbox.visible = false
+
+func set_value(new_value: float, suppress_signal: bool = true):
+
+	outputlog("set_value",2)
+
+	value = new_value
+
+	if suppress_signal:
+		slider_change(new_value, hslider, suppress_signal)
+		slider_change(new_value, spinbox, suppress_signal)		
+	else:
+		# Note that this should automatically update the spinbox via signals
+		hslider.value = new_value
+
+

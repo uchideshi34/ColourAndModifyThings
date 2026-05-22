@@ -324,28 +324,6 @@ func find_select_vbox(tool_name: String):
 
 #########################################################################################################
 ##
-## SET UI TO SELECTED NODE VALUES FUNCTIONS
-##
-#########################################################################################################
-
-
-#########################################################################################################
-##
-## GET VALUES FROM UI FUNCTIONS
-##
-#########################################################################################################
-
-
-#########################################################################################################
-##
-## UDPATE SELECTION WITH NEW VALUES FUNCTIONS
-##
-#########################################################################################################
-
-		
-
-#########################################################################################################
-##
 ## HELPER FUNCTIONS
 ##
 #########################################################################################################
@@ -678,10 +656,6 @@ func find_custom_color_palette(tool_type: String, location: String, custom_color
 func on_dd_custom_color_control_changed(_ignore_this, _ignore_this_too, tool_type: String, location: String):
 
 	outputlog("on_dd_custom_color_control_changed",2)
-
-	var focus = Global.Editor.GetFocus()
-
-	outputlog("focus is: " + str(focus),2)
 
 	# Pass to the colourthings class. Noting that it isn't necessary to also pass to the EdgeBlurPatterns as the ColourThings class will deal with this.
 	colourthings.on_dd_custom_color_control_changed(_ignore_this, _ignore_this_too, tool_type, location)
