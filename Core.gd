@@ -1164,8 +1164,14 @@ func on_tool_launch(tool_type: String):
 		# Move the gradient map ui to the currently active tool
 		if tool_type in ["ObjectTool","ScatterTool","PathTool","PatternShapeTool","WallTool","PortalTool"]:
 			colourthings.ui_config["gradient_map"].move_location(tool_type, "main", colourthings.ui_config[tool_type]["main"]["gradient_button"].pressed)
+
+			# Code to make sure that the UI stored state reflects the actual UI. Noting that events/triggers outside the tool could change this
+			yield(Global.Editor.Toolset.GetToolPanel(tool_type).get_tree(),"idle_frame")
+			yield(Global.Editor.Toolset.GetToolPanel(tool_type).get_tree(),"idle_frame")
+			colourthings.refresh_combined_ui_stored_state(tool_type, "main")
 		if tool_type in ["TerrainBrush"]:
 			colourterrain.ui_config["gradient_map"].move_location(tool_type, "main", colourterrain.ui_config[tool_type]["main"]["gradient_button"].pressed)
+
 	# If this is a close event
 	else:
 		# If this is a wall tool closure event
