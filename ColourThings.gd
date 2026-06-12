@@ -1529,9 +1529,6 @@ func paste_colour_settings(tool_type: String):
 		if node_type == "objects" and node.has_method("HasCustomColor") and node.HasCustomColor():
 			if paste_config.has("colorable_custom_color") and paste_config["colorable_custom_color"] != null:
 				node.SetCustomColor(Color(paste_config["colorable_custom_color"]))
-			# Also store the DD color we copied from
-			if paste_config.has("original_dd_color") and paste_config["original_dd_color"] != null:
-				paste_config["colorable_custom_color"] = node.GetCustomColor().to_html()
 
 		# Apply the settings to the node
 		set_tint_colour(node_id, node_type, paste_config, false)
@@ -2153,17 +2150,6 @@ func set_tint_colour(node_id: int, type: String, colour_config: Dictionary, forc
 				var target_color = Color(colour_config["colorable_custom_color"])
 				if node.GetCustomColor() != target_color:
 					node.SetCustomColor(target_color)
-
-		# Handle original_color for patterns
-		if customdatamanager.has_data(node_id):
-			var stored = customdatamanager.get_data(node_id)
-			# If we're resetting (shader_type is none), clear original_color
-			if colour_config.has("shader_type") and colour_config["shader_type"] == "none":
-				if stored.has("original_color"):
-					stored.erase("original_color")
-			# Otherwise preserve original_color if it exists
-			elif stored.has("original_color") and stored["original_color"] != null:
-				colour_config["original_color"] = stored["original_color"]
 
 		# Set custom values on the node
 		set_custom_attributes_on_map_node(node, type, colour_config, force_shader)

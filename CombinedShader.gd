@@ -281,49 +281,6 @@ func set_custom_attributes_on_node(node: Node2D, new_config: Dictionary):
 
 	outputlog("set_custom_attributes_on_node: " + str(new_config),2)
 
-	# For patterns: save and restore the original DD color
-	if new_config.has("type") and new_config["type"] == "pattern_shapes":
-		var current_texture_path = ""
-		if node._Texture != null:
-			current_texture_path = node._Texture.resource_path
-		
-		# Check if the texture has changed since we saved the original color
-		if node.has_meta("original_dd_texture"):
-			var saved_texture_path = node.get_meta("original_dd_texture")
-			if saved_texture_path != current_texture_path:
-				# Texture changed, remove old original_dd_color
-				node.remove_meta("original_dd_color")
-				node.remove_meta("original_dd_texture")
-		
-		# Restore original_dd_color: prefer saved config data, then node meta, then current node color
-		if not node.has_meta("original_dd_color"):
-			# First check if we have it persisted in the config (survives save/load)
-			if new_config.has("original_dd_color") and new_config["original_dd_color"] != "" and new_config["original_dd_color"] != "ffffffff":
-				node.set_meta("original_dd_color", new_config["original_dd_color"])
-				node.set_meta("original_dd_texture", current_texture_path)
-			else:
-				# Read from the node's current state (first time setup)
-				var pattern_save = node.Save(true)
-				if pattern_save.has("color"):
-					var saved_color = pattern_save["color"]
-					# Only save if the color is not white (white means DD already has the mod-modified value)
-					if saved_color != "ffffffff":
-						node.set_meta("original_dd_color", saved_color)
-						node.set_meta("original_dd_texture", current_texture_path)
-		
-		# Always persist original_dd_color into the config so it survives save/load
-		if node.has_meta("original_dd_color"):
-			new_config["original_dd_color"] = node.get_meta("original_dd_color")
-
-	# For walls: save the original DD color using node meta
-	if new_config.has("type") and new_config["type"] == "walls":
-		if not node.has_meta("original_dd_color"):
-			var wall_color = node.Color
-			if wall_color != null:
-				node.set_meta("original_dd_color", wall_color.to_html())
-		else:
-			pass
-
 	# Make new shader
 	var shader_material = ShaderMaterial.new()
 	var apply_shader = false
@@ -560,19 +517,8 @@ func set_custom_modulate(node: Node2D, config: Dictionary, apply_shader: bool):
 		"pattern_shapes":
 			var node_id = node.get_meta("node_id")
 			
-			# Determine which color to use:
-			# - If user changed the DD color (not white), use that
-			# - Otherwise use the original_dd_color
 			var base_color = Color(config["colour"])
-			var use_original = false
-			
-			# If the config color is white or nearly white, use original instead
-			if base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99:
-				if node.has_meta("original_dd_color"):
-					base_color = Color(node.get_meta("original_dd_color"))
-					use_original = true
-			
-			
+
 			# If we are using the universal shader then we use the modulate value to change the pattern
 			if apply_shader:
 				# If this is a tile type, strange things are happening with DD resetting the default color values so just set the colour to white and accept that tileset can't have gradients and colours
@@ -596,11 +542,6 @@ func set_custom_modulate(node: Node2D, config: Dictionary, apply_shader: bool):
 		"walls":
 			# Determine which color to use for walls
 			var wall_base_color = Color(config["colour"])
-			
-			# If the config color is white or nearly white, use original instead
-			if wall_base_color.r > 0.99 and wall_base_color.g > 0.99 and wall_base_color.b > 0.99:
-				if node.has_meta("original_dd_color"):
-					wall_base_color = Color(node.get_meta("original_dd_color"))
 			
 			# Apply opacity
 			wall_base_color.a = opacity
@@ -749,25 +690,14 @@ func update_shader_material_with_colour_config(node, shader_material: ShaderMate
 			# For patterns, pass the base color to shader
 			if colour_config["type"] == "pattern_shapes":
 				var base_color = Color(colour_config["colour"])
-				# If config color is white, use original_dd_color instead
-				if base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99:
-					if node.has_meta("original_dd_color"):
-						base_color = Color(node.get_meta("original_dd_color"))
-				# Only apply base_color if it's not white
-				if not (base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99):
-					shader_material.set_shader_param("base_color", base_color)
-					shader_material.set_shader_param("apply_base_color", true)
+
+				shader_material.set_shader_param("base_color", base_color)
+				shader_material.set_shader_param("apply_base_color", true)
 			# For walls, pass the base color to shader
 			if colour_config["type"] == "walls":
 				var base_color = Color(colour_config["colour"])
-				# If config color is white, use original_dd_color instead
-				if base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99:
-					if node.has_meta("original_dd_color"):
-						base_color = Color(node.get_meta("original_dd_color"))
-				# Only apply base_color if it's not white
-				if not (base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99):
-					shader_material.set_shader_param("base_color", base_color)
-					shader_material.set_shader_param("apply_base_color", true)
+				shader_material.set_shader_param("base_color", base_color)
+				shader_material.set_shader_param("apply_base_color", true)
 	
 	# If this is a pattern then set the pattern specific values
 	if colour_config["type"] == "pattern_shapes":
@@ -969,27 +899,6 @@ func reset_node_material(node):
 				# Try to restore original_color from stored data
 				var restore_color = Color.white
 				var node_id = node.get_meta("node_id")
-				# First try node meta (most reliable)
-				if node.has_meta("original_dd_color"):
-					restore_color = Color(node.get_meta("original_dd_color"))
-					outputlog("Restored from node meta: " + str(restore_color), 2)
-					# Remove the meta so next time we capture fresh color
-					node.remove_meta("original_dd_color")
-					if node.has_meta("original_dd_texture"):
-						node.remove_meta("original_dd_texture")
-				# Then try customdatamanager
-				elif customdatamanager.has_data(node_id):
-					var stored = customdatamanager.get_data(node_id)
-					if stored.has("original_color") and stored["original_color"] != null:
-						restore_color = Color(stored["original_color"])
-					else:
-						var pattern_save = node.Save(true)
-						if pattern_save.has("color"):
-							restore_color = Color(pattern_save["color"])
-				else:
-					var pattern_save = node.Save(true)
-					if pattern_save.has("color"):
-						restore_color = Color(pattern_save["color"])
 				node.set_modulate(Color.white)
 				node.SetOptions(node._Texture, restore_color, node._Rotation)
 			"objects":
@@ -1000,10 +909,6 @@ func reset_node_material(node):
 			"walls":
 				# Restore original color if available
 				var restore_color = Color.white
-				if node.has_meta("original_dd_color"):
-					restore_color = Color(node.get_meta("original_dd_color"))
-					# Remove the meta so next time we capture fresh color
-					node.remove_meta("original_dd_color")
 				node.SetColor(restore_color)
 				node.set_modulate(Color.white)
 				# Null each line2d in the lines array
