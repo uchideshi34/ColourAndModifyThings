@@ -691,13 +691,18 @@ func update_shader_material_with_colour_config(node, shader_material: ShaderMate
 			if colour_config["type"] == "pattern_shapes":
 				var base_color = Color(colour_config["colour"])
 
-				shader_material.set_shader_param("base_color", base_color)
-				shader_material.set_shader_param("apply_base_color", true)
+				# Only apply base_color if it's not white
+				if not (base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99):
+					shader_material.set_shader_param("base_color", base_color)
+					shader_material.set_shader_param("apply_base_color", true)
+
 			# For walls, pass the base color to shader
 			if colour_config["type"] == "walls":
 				var base_color = Color(colour_config["colour"])
-				shader_material.set_shader_param("base_color", base_color)
-				shader_material.set_shader_param("apply_base_color", true)
+				# Only apply base_color if it's not white
+				if not (base_color.r > 0.99 and base_color.g > 0.99 and base_color.b > 0.99):
+					shader_material.set_shader_param("base_color", base_color)
+					shader_material.set_shader_param("apply_base_color", true)
 	
 	# If this is a pattern then set the pattern specific values
 	if colour_config["type"] == "pattern_shapes":

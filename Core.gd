@@ -772,6 +772,17 @@ func _on_item_selected_in_gridmenu(_id: int, tool_type: String, location: String
 	outputlog("_on_item_selected_in_gridmenu",2)
 	colourthings.refresh_combined_ui_stored_state(tool_type, location)
 
+	# If this is the pattern tool, check if the selected texture is a tileset
+	if tool_type == "PatternShapeTool":
+		var gridmenu = ui_config[tool_type][location]["gridmenu"]
+		if _id < gridmenu.Lookup.keys().size():
+			var texture_path = gridmenu.Lookup.keys()[_id]
+			# Check if it is a tileset
+			if "/tilesets/" in texture_path:
+				colourthings.enable_disable_pattern_colour_buttons(location, false)
+			else:
+				colourthings.enable_disable_pattern_colour_buttons(location, true)
+
 	# If the location is select then update any selected items
 	if location == "select":
 		if Global.Editor.Tools["SelectTool"].Selected.size() > 0:
@@ -1171,6 +1182,11 @@ func on_tool_launch(tool_type: String):
 			colourthings.refresh_combined_ui_stored_state(tool_type, "main")
 		if tool_type in ["TerrainBrush"]:
 			colourterrain.ui_config["gradient_map"].move_location(tool_type, "main", colourterrain.ui_config[tool_type]["main"]["gradient_button"].pressed)
+		
+		# Handle for tilesets - fire a selected item call on tool launch of PatternShapeTool
+		if tool_type == "PatternShapeTool":
+			if ui_config[tool_type]["main"]["gridmenu"].get_selected_items().size() > 0:
+				_on_item_selected_in_gridmenu(ui_config[tool_type]["main"]["gridmenu"].get_selected_items()[0], tool_type, "main")
 
 	# If this is a close event
 	else:

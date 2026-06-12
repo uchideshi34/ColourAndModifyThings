@@ -1214,7 +1214,20 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 			set_custom_color_palette_visible_mixed(tool_type, location)
 		else:
 			set_custom_color_palette_visible(tool_type, location, has_colorable)
-	
+
+	# If this is the patternshape tool
+	if tool_type == "PatternShapeTool":
+		# If this is a tileset then
+		var texture_path = ""
+		var texture = get_asset_texture(node, tool_type)
+		if texture != null:
+			texture_path = texture.resource_path
+		if "/tilesets/" in texture_path:
+			enable_disable_pattern_colour_buttons(location, false)
+		else:
+			enable_disable_pattern_colour_buttons(location, true)
+
+
 # Function to force the dd custom colour ui to match the selected node in case the timeframe for setting it is out of kilter with this mod
 func force_refresh_dd_custom_colour_ui_from_selected_node(node: Node2D, tool_type: String):
 
@@ -2868,6 +2881,18 @@ func _on_colour_option_button_pressed(button_pressed: bool, source_shader_type: 
 	# If we are in the object or scatter tool and preview colours are active
 	if location == "main":
 		set_preview_colour(tool_type, true)
+
+# Function to enable or disable the pattern colour buttons
+func enable_disable_pattern_colour_buttons(location: String, enable: bool):
+
+	outputlog("enable_disable_pattern_colour_buttons: " + str(enable), 2)
+
+	var ui_element = ui_config["PatternShapeTool"][location]
+
+	ui_element["normalise_button"].disabled = not enable
+	ui_element["set_white_button"].disabled = not enable
+	ui_element["gradient_button"].disabled = not enable
+
 
 # Function to get the combined config from the ui, by retrieving the current colour config and adding it to the stored values
 func refresh_combined_ui_stored_state(tool_type: String, location: String):
