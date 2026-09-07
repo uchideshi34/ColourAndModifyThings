@@ -545,8 +545,15 @@ func set_custom_modulate(node: Node2D, config: Dictionary, apply_shader: bool):
 			
 			# Apply opacity
 			wall_base_color.a = opacity
+			
 			node.SetColor(wall_base_color)
-			node.set_modulate(Color(1, 1, 1, opacity))
+
+			if apply_shader:
+				for line in node.lines:
+					if line.self_modulate != wall_base_color:
+						line.self_modulate = wall_base_color
+			if config["shader_type"] == "saturation":
+				pass
 
 # Is this is a tile pattern
 func is_tile_pattern(node: Node2D) -> bool:
