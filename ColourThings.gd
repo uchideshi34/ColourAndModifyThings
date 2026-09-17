@@ -905,7 +905,7 @@ func set_custom_color_palette_visible(tool_type: String, location: String, make_
 	if ui_element["custom_color_palette"] != null && ui_element["custom_color_label"] != null:
 		ui_element["custom_color_palette"].visible = make_visible
 		ui_element["custom_color_label"].visible = make_visible
-	
+
 	# Choose whether to set the ui for custom colour buttons visible
 	if is_object_tool_type(tool_type):
 		# Always show non-gradient buttons (HSL controls) so saturate mode works for colorable assets too
@@ -914,7 +914,7 @@ func set_custom_color_palette_visible(tool_type: String, location: String, make_
 		# Set the palette invisible when colorable asset is selected (custom color picker takes over)
 		ui_config[tool_type][location]["palette"].visible = not make_visible
 		# Always show opacity slider (it works for colorable assets too)
-		ui_config[tool_type][location]["opacity_slider"].hbox.visible = true
+		ui_element["opacity_slider"].show()
 
 		# If we are in the main tool, then check whether we should update the object library custom colour to match the dd custom colour palette
 		if location == "main":
@@ -1082,16 +1082,15 @@ func set_colour_ui_to_selected_node_values(node: Node2D, tool_type: String):
 		# Update the colour of the palette (with triggering a signal so all selected nodes update)
 		if not tool_type in NON_CUSTOM_PALETTE_TOOLS:
 			ui_element["palette"].SetColor(Color(node_data["colour"]),false)
-			# Restore opacity: prefer explicit opacity key, fall back to colour alpha
-			if node_data.has("opacity"):
-				ui_element["opacity_slider"].slider_and_spinbox_change(node_data["opacity"],true)
-			else:
-				ui_element["opacity_slider"].slider_and_spinbox_change(Color(node_data["colour"]).a,true)
 
 		# When we are using the DD custom colour palette, then force set the palette to the node item. This should be redundant but may cause race condition issues
 		else:
 			outputlog("trying force refresh",2)
 			force_refresh_dd_custom_colour_ui_from_selected_node(node, tool_type)
+		
+		# Restore opacity: prefer explicit opacity key, fall back to colour alpha
+		if node_data.has("opacity"):
+			ui_element["opacity_slider"].slider_and_spinbox_change(node_data["opacity"],true)
 
 		# Update the levels slider if needed
 		match node_data["shader_type"]:
@@ -1241,17 +1240,22 @@ func force_refresh_dd_custom_colour_ui_from_selected_node(node: Node2D, tool_typ
 	# If the node doesn't match the tool_type then do nothing
 	if get_node_type(node) != TYPE_LOOKUP[tool_type]: return
 
+	var color_string
 	match tool_type:
 		"PatternShapeTool":
-			var color_string = get_pattern_colour(node)
+			color_string = get_pattern_colour(node)
 			if color_string != null:
 				ui_element["custom_color_button"].color = Color(color_string)
 				outputlog("setting patternshape color: " + str(node) + " colour: " + str(color_string),2)
 		
 		"WallTool":
 			ui_element["custom_color_button"].color = node.Color
+			color_string = node.Color.to_html()
 			outputlog("setting wall color: " + str(node) + " colour: " + str(node.Color.to_html()),2)
-
+	
+	# Set the opacity slider is according to the colour value. Noting that we link the opactiy to the colour for walls, etc
+	if ui_element["opacity_slider"] != null:
+		ui_element["opacity_slider"].set_value(Color(color_string).a, true)
 
 # Function to look at the selected items in the select tool and change their colour if they are all of the correct type
 func set_colour_palette_to_selection():
@@ -1357,12 +1361,12 @@ func get_colour_config_from_ui(tool_type: String, location: String, debug: bool 
 			outputlog("custom_color_button color: " + str(ui_element["custom_color_button"].color.to_html()),3)
 			outputlog("custom_color_button picker color: " + str(ui_element["custom_color_button"].get_picker().color.to_html()),3)
 			# Note we are using the color picker color here as there seems to be a delay in the colour palette updating
-			var pattern_color = ui_element["custom_color_button"].color
+			var patternwall_color = ui_element["custom_color_button"].color
 			# Apply opacity from slider for patterns
 			if ui_element.has("opacity_slider"):
-				pattern_color.a = ui_element["opacity_slider"].value
-			colour_config["colour"] = pattern_color.to_html()
-			colour_config["opacity"] = pattern_color.a
+				patternwall_color.a = ui_element["opacity_slider"].value
+			colour_config["colour"] = patternwall_color.to_html()
+			colour_config["opacity"] = patternwall_color.a
 		else:
 			colour_config["colour"] = "ffffffff"
 			colour_config["opacity"] = 1.0
@@ -2939,14 +2943,30 @@ func _on_tintcolour_ui_changed(_ignore_this, tool_type: String, location: String
 	_on_tintcolour_changed(null, tool_type, location)
 
 # Function called when the opacity slider changes
-func _on_opacity_slider_ui_changed(_ignore_this, tool_type: String, location: String):
+func _on_opacity_slider_ui_changed(opacity, tool_type: String, location: String):
+
+	outputlog("_on_opacity_slider_ui_changed: opacity: " + str(opacity),2)
+
 	_begin_change("opacity")
 
-	# Update the tint colour only for tools with a palette
-	if ui_config[tool_type][location]["palette"] != null:
-		var color = ui_config[tool_type][location]["palette"].color
-		color.a = ui_config[tool_type][location]["opacity_slider"].value
-		ui_config[tool_type][location]["palette"].SetColor(color,false)
+	var color
+	# Check if this is a true UI change rather than a reset
+	if opacity != null:
+		# Force the value of the opacity slider value
+		if ui_config[tool_type][location]["opacity_slider"] != null:
+			ui_config[tool_type][location]["opacity_slider"].value = opacity
+		# Update the tint colour only for tools with a palette
+		if not tool_type in NON_CUSTOM_PALETTE_TOOLS:
+			if ui_config[tool_type][location]["palette"] != null:
+				color = ui_config[tool_type][location]["palette"].color
+				color.a = opacity
+				ui_config[tool_type][location]["palette"].SetColor(color,false)
+		# For patterns and walls, we want to update the dd custom colour
+		else:
+			if ui_config[tool_type][location]["custom_color_button"] != null:
+				color = ui_config[tool_type][location]["custom_color_button"].color
+				color.a = opacity
+				ui_config[tool_type][location]["custom_color_button"].color = color
 
 	# Update the stored ui config
 	refresh_combined_ui_stored_state(tool_type, location)

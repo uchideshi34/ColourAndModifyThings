@@ -17,7 +17,8 @@ const DEFAULT_COMBINED_DATA = {
 	"colour": "ffffffff",
 	"start_point": 0.0,
 	"has_edge_blur": false,
-	"path_flip_vertical": false
+	"path_flip_vertical": false,
+	"opacity": 1.0
 }
 const COMBINED_DATA_STORE = "UchideshiNodeData"
 
@@ -486,6 +487,10 @@ func is_data_default(config_data, ignore_colour: bool = false):
 	
 	if config_data.has("fade_distance") && config_data["type"] == "paths":
 		if not is_equal_approx(config_data["fade_distance"],0.1):
+			return false
+	
+	if config_data.has("opacity"):
+		if config_data["opacity"] < 1.0:
 			return false
 	
 	return true
